@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "agentStop": [
+      {
+        "type": "command",
+        "comment": "revgate: open a GitHub-style review of the turn's changes and feed the result back to Copilot. Raise timeoutSec to however long you might spend reviewing.",
+        "bash": "node \"$HOME/path/to/revgate/dist/index.js\"",
+        "powershell": "node \"$env:USERPROFILE\\path\\to\\revgate\\dist\\index.js\"",
+        "timeoutSec": 3600
+      }
+    ]
+  }
+}

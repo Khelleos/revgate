@@ -1,0 +1,888 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>revgate</title>
+<!-- Inline data-URI favicon so the page never 404s a request for one. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%F0%9F%94%8D%3C/text%3E%3C/svg%3E" />
+<style>
+  /* Self-hosted so the review page needs no network — served from public/fonts/
+     by the local review server. Latin subset; falls back to the platform mono. */
+  @font-face {
+    font-family: "JetBrains Mono"; font-style: normal; font-weight: 400;
+    font-display: swap; src: url("/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+  }
+  @font-face {
+    font-family: "JetBrains Mono"; font-style: normal; font-weight: 600;
+    font-display: swap; src: url("/fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+  }
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+    --border: #30363d; --text: #e6edf3; --muted: #8b949e;
+    --add-bg: #12261e; --add-line: #1a4d2e; --add-gutter: #163a2a;
+    --del-bg: #25171c; --del-line: #4d1a25; --del-gutter: #3a1620;
+    --accent: #2f81f7; --green: #238636; --amber: #9e6a03; --danger: #da3633;
+    --sel: #388bfd44;
+    --tok-com: #8b949e; --tok-str: #a5d6ff; --tok-num: #79c0ff; --tok-kw: #ff7b72;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  /* Light palette shared by an explicit choice and the system-default fallback. */
+  :root[data-theme="light"] {
+    --bg: #ffffff; --bg2: #f6f8fa; --bg3: #eaeef2;
+    --border: #d0d7de; --text: #1f2328; --muted: #57606a;
+    --add-bg: #e6ffec; --add-line: #ccffd8; --add-gutter: #ccffd8;
+    --del-bg: #ffebe9; --del-line: #ffd7d5; --del-gutter: #ffd7d5;
+    --accent: #0969da; --green: #1a7f37; --amber: #8a5d00; --danger: #cf222e;
+    --sel: #54aeff55;
+    --tok-com: #6e7781; --tok-str: #0a3069; --tok-num: #0550ae; --tok-kw: #cf222e;
+  }
+  /* No explicit choice yet: follow the OS. An explicit data-theme wins over this. */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme]) {
+      --bg: #ffffff; --bg2: #f6f8fa; --bg3: #eaeef2;
+      --border: #d0d7de; --text: #1f2328; --muted: #57606a;
+      --add-bg: #e6ffec; --add-line: #ccffd8; --add-gutter: #ccffd8;
+      --del-bg: #ffebe9; --del-line: #ffd7d5; --del-gutter: #ffd7d5;
+      --accent: #0969da; --green: #1a7f37; --amber: #8a5d00; --danger: #cf222e;
+      --sel: #54aeff55;
+      --tok-com: #6e7781; --tok-str: #0a3069; --tok-num: #0550ae; --tok-kw: #cf222e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+
+  /* Visible keyboard focus for every interactive element. */
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  /* Respect users who ask for less motion (also gates the JS smooth-scroll). */
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+
+  header { position: sticky; top: 0; z-index: 20; background: var(--bg2);
+    border-bottom: 1px solid var(--border); padding: 10px 16px;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header .title { font-weight: 600; font-size: 15px; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  .badge { font-size: 12px; background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 999px; padding: 2px 10px; color: var(--muted); }
+  .themetoggle { display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; padding: 0; border-radius: 6px; font-size: 15px; line-height: 1;
+    background: transparent; border: 1px solid var(--border); color: var(--muted); }
+  .themetoggle:hover { background: var(--bg3); color: var(--text); }
+
+  .layout { display: grid; grid-template-columns: 260px minmax(0, 1fr) 320px;
+    grid-template-areas: "tree diff remarks"; min-height: calc(100vh - 49px); }
+
+  /* Below ~1100px the three columns crowd the diff, so drop the remarks rail to a
+     full-width strip under the diff. Below 780px the file tree joins it on top. */
+  @media (max-width: 1100px) {
+    .layout { grid-template-columns: 260px minmax(0, 1fr);
+      grid-template-areas: "tree diff" "remarks remarks"; }
+    .remarks { position: static; height: auto; max-height: 30vh;
+      border-left: none; border-top: 1px solid var(--border); }
+  }
+  @media (max-width: 780px) {
+    .layout { grid-template-columns: 1fr; grid-template-areas: "tree" "diff" "remarks"; }
+    /* Keep file navigation reachable: static strip above the diffs, not hidden. */
+    aside { position: static; height: auto; max-height: 30vh;
+      border-right: none; border-bottom: 1px solid var(--border); }
+  }
+
+  aside { grid-area: tree; border-right: 1px solid var(--border); background: var(--bg2);
+    position: sticky; top: 49px; height: calc(100vh - 49px); overflow: auto; padding: 8px; }
+  aside h3, .remarks h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--muted); margin: 8px 8px 4px; }
+
+  /* Right rail: every remark across all files, grouped by file. Clicking one
+     opens its file and scrolls to the commented line. */
+  .remarks { grid-area: remarks; border-left: 1px solid var(--border); background: var(--bg2);
+    position: sticky; top: 49px; height: calc(100vh - 49px); overflow: auto; padding: 8px; }
+  .remarks .empty { padding: 24px 12px; }
+  .remarks .rfile { font-family: var(--mono); font-size: 11px; color: var(--muted);
+    margin: 12px 8px 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .remark { display: flex; gap: 6px; align-items: baseline; padding: 6px 8px;
+    border-radius: 6px; cursor: pointer; }
+  .remark:hover, .remark:focus { background: var(--bg3); }
+  .remark .rloc { font-family: var(--mono); font-size: 10px; color: var(--muted);
+    background: var(--bg3); border-radius: 4px; padding: 0 5px; flex: none; }
+  .remark:hover .rloc, .remark:focus .rloc { background: var(--bg2); }
+  .remark .rbody { flex: 1; font-size: 12.5px; line-height: 1.4;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .remark .rdel { color: var(--danger); font-size: 12px; flex: none; opacity: 0; cursor: pointer; }
+  .remark:hover .rdel, .remark:focus-within .rdel { opacity: 1; }
+  .filerow, .folderrow { display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+    border-radius: 6px; cursor: pointer; font-size: 13px; }
+  /* Selected file shares the exact highlight used on hover/focus. */
+  .filerow:hover, .filerow:focus, .filerow.selected,
+  .folderrow:hover, .folderrow:focus { background: var(--bg3); }
+  .folderrow { color: var(--muted); user-select: none; }
+  .folderrow .twist { font-size: 10px; width: 10px; flex: none; text-align: center; }
+  .folderrow .foldername { font-family: var(--mono); font-size: 12px; color: var(--text); }
+  .filerow .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--mono); font-size: 12px; }
+  .filerow .adds { color: var(--green); font-size: 11px; }
+  .filerow .dels { color: var(--danger); font-size: 11px; }
+  .filerow .cbubble { background: var(--accent); color: #fff; border-radius: 999px;
+    font-size: 10px; padding: 0 6px; min-width: 16px; text-align: center; }
+
+  main { grid-area: diff; padding: 16px; max-width: 1100px; }
+
+  /* overflow:clip (not hidden) rounds the corners WITHOUT becoming a scroll
+     container — otherwise the sticky .file-head below is offset onto the diff. */
+  .file { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; overflow: clip; }
+  .file-head { background: var(--bg2); padding: 8px 12px; display: flex; align-items: center;
+    gap: 8px; border-bottom: 1px solid var(--border); position: sticky; top: 49px; z-index: 5; }
+  .file-head .path { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+  .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+    padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
+  .tag.new { color: var(--green); border-color: var(--green); }
+  .tag.del { color: var(--danger); border-color: var(--danger); }
+
+  table.diff { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 12.5px; }
+  table.diff td { padding: 0 10px; white-space: pre-wrap; word-break: break-word; vertical-align: top; }
+  .gutter { width: 1%; text-align: right; color: var(--muted); user-select: none;
+    background: var(--bg2); border-right: 1px solid var(--border); min-width: 42px; }
+  tr.add td.code { background: var(--add-bg); } tr.add td.gutter { background: var(--add-gutter); }
+  tr.del td.code { background: var(--del-bg); } tr.del td.gutter { background: var(--del-gutter); }
+  tr.hunk td { background: var(--bg3); color: var(--muted); padding: 2px 10px; }
+  td.code { position: relative; }
+  /* Reserve a left lane for the add-comment button so the sign never shifts on hover. */
+  table.diff td.code { padding-left: 26px; }
+  td.code .sign { display: inline-block; width: 1ch; margin-right: 10px; color: var(--muted); }
+  tr.line:hover td.gutter { color: var(--text); }
+  .addbtn { position: absolute; left: 3px; top: 50%; transform: translateY(-50%);
+    background: var(--accent); color: #fff; border: none; border-radius: 4px; width: 18px; height: 18px;
+    padding: 0; font-size: 13px; line-height: 1; cursor: pointer; display: none;
+    align-items: center; justify-content: center; }
+  /* flex (not block) so the "+" is centred both axes when the button appears. */
+  tr.line:hover .addbtn { display: flex; }
+
+  /* Syntax tokens — coloured on top of the add/del row tints. */
+  .tok-com { color: var(--tok-com); font-style: italic; }
+  .tok-str { color: var(--tok-str); }
+  .tok-num { color: var(--tok-num); }
+  .tok-kw  { color: var(--tok-kw); }
+
+  /* Range selection: gutters are the drag handle; selected rows get a wash. */
+  .gutter { cursor: ns-resize; }
+  tr.hunk td.gutter { cursor: default; }
+  tr.line.selrange td.code, tr.line.selrange td.gutter { background: var(--sel); }
+  /* Brief wash on the target line(s) when you jump there from the remarks panel. */
+  @keyframes remarkflash { from { background: var(--sel); } to { background: transparent; } }
+  tr.line.flash td.code, tr.line.flash td.gutter { background: var(--sel); animation: remarkflash 1.2s ease-out; }
+  @media (prefers-reduced-motion: reduce) {
+    tr.line.flash td.code, tr.line.flash td.gutter { animation: none; }
+  }
+
+  /* Per-file staging toggle in the diff header. */
+  .stage { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+    color: var(--muted); cursor: pointer; user-select: none; }
+  .stage input { cursor: pointer; margin: 0; }
+  /* Sidebar staged dot: filled = staged, ring = partial, hidden = none. */
+  .filerow .sdot { width: 8px; height: 8px; border-radius: 50%; flex: none;
+    border: 1px solid var(--green); background: var(--green); }
+  .filerow .sdot.partial { background: transparent; }
+  .filerow .sdot.none { display: none; }
+
+  /* Comment rows span all three columns; drop the cell padding so the panel
+     sits flush and control the insets on the panel itself. */
+  table.diff td.wide { padding: 0; }
+  .commentbox { background: var(--bg2); border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border); padding: 12px 16px 12px 26px; }
+  .commentbox textarea { width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-family: var(--mono);
+    font-size: 12.5px; resize: vertical; min-height: 60px; }
+  .commentbox .row { display: flex; gap: 8px; margin-top: 8px; }
+  .existing { background: var(--bg2); border-top: 1px solid var(--border); padding: 10px 16px 10px 26px;
+    display: flex; gap: 8px; align-items: flex-start; }
+  .existing .body { flex: 1; white-space: pre-wrap; }
+  .existing .loc { font-family: var(--mono); font-size: 11px; color: var(--muted);
+    background: var(--bg3); border-radius: 4px; padding: 0 5px; margin-right: 2px; }
+  .existing .del { color: var(--danger); cursor: pointer; font-size: 12px; }
+
+  button { font: inherit; cursor: pointer; border-radius: 6px; padding: 6px 14px;
+    border: 1px solid var(--border); background: var(--bg3); color: var(--text); }
+  button.primary { background: var(--green); border-color: var(--green); color: #fff; }
+  button.warn { background: var(--amber); border-color: var(--amber); color: #fff; }
+  button.accent { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.ghost { background: transparent; }
+  button:disabled { opacity: .5; cursor: default; }
+
+  .reviewbar { position: sticky; bottom: 0; background: var(--bg2);
+    border-top: 1px solid var(--border); padding: 12px 16px; z-index: 15; }
+  .reviewbar textarea { width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px; min-height: 54px;
+    resize: vertical; font: inherit; }
+  .reviewbar .actions { display: flex; gap: 10px; margin-top: 10px; align-items: center; }
+
+  .done { text-align: center; padding: 80px 20px; }
+  .done h1 { font-size: 22px; } .done p { color: var(--muted); }
+  .empty { padding: 40px; color: var(--muted); text-align: center; }
+</style>
+<script>
+  // Apply any saved theme before first paint so the page never flashes the wrong one.
+  try {
+    const t = localStorage.getItem("revgate-theme");
+    if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+  } catch (e) { /* storage blocked — fall back to the OS theme */ }
+</script>
+</head>
+<body>
+<div id="app"><div class="empty">Loading review…</div></div>
+
+<script>
+const state = { ctx: null, comments: [], submitted: false, selected: null };
+const $ = (sel, el = document) => el.querySelector(sel);
+const el = (tag, props = {}, children = []) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v);
+  }
+  for (const c of [].concat(children)) if (c) n.append(c);
+  return n;
+};
+const commentKey = (c) => `${c.file}::${c.side}::${c.startLine}::${c.endLine}`;
+/** "12" for a single line, "12-16" for a range. */
+const rangeLabel = (a, b) => (a === b ? `${a}` : `${a}-${b}`);
+
+/* ---- Lightweight, dependency-free syntax highlighting ------------------- *
+ * Per-line, best-effort tokenizing. Multi-line constructs (block comments,
+ * template strings) that cross diff lines only highlight their visible part —
+ * an accepted trade-off for a zero-dep, per-line diff renderer.             */
+const KEYWORDS = {
+  clike: new Set(("break case catch class const continue debugger default delete do else enum export " +
+    "extends false finally for function if implements import in instanceof interface let new null package " +
+    "private protected public return static super switch this throw true try typeof var void while with yield " +
+    "async await as from get set readonly type namespace declare abstract is keyof infer never unknown any " +
+    "string number boolean object symbol undefined struct func defer chan map range select fallthrough goto " +
+    "impl fn mut pub use mod match where loop trait ref move box unsafe extern crate self dyn union sizeof " +
+    "typedef volatile register unsigned signed short long double float char int bool auto template virtual " +
+    "override final friend inline operator nullptr using constexpr explicit throws synchronized").split(/\s+/)),
+  python: new Set(("False None True and as assert async await break class continue def del elif else except " +
+    "finally for from global if import in is lambda nonlocal not or pass raise return try while with yield " +
+    "match case self").split(/\s+/)),
+  shell: new Set(("if then else elif fi case esac for while until do done in function select return local " +
+    "export readonly declare unset echo cd exit set trap source").split(/\s+/)),
+  conf: new Set(),
+  css: new Set(),
+  json: new Set(["true", "false", "null"]),
+};
+const FAMILIES = {
+  js: "clike", jsx: "clike", ts: "clike", tsx: "clike", mjs: "clike", cjs: "clike",
+  go: "clike", rs: "clike", java: "clike", c: "clike", h: "clike", cpp: "clike", cc: "clike",
+  cxx: "clike", hpp: "clike", cs: "clike", php: "clike", swift: "clike", kt: "clike", kts: "clike",
+  scala: "clike", dart: "clike", proto: "clike", groovy: "clike",
+  py: "python", pyw: "python",
+  sh: "shell", bash: "shell", zsh: "shell",
+  yaml: "conf", yml: "conf", toml: "conf", ini: "conf", cfg: "conf", conf: "conf", env: "conf",
+  css: "css", scss: "css", sass: "css", less: "css",
+  json: "json", jsonc: "json",
+  html: "markup", htm: "markup", xml: "markup", svg: "markup", vue: "markup", svelte: "markup",
+};
+const SCAN_CFG = {
+  clike:  { line: ["//"], block: ["/*", "*/"], quotes: "\"'`" },
+  python: { line: ["#"], block: null, quotes: "\"'" },
+  shell:  { line: ["#"], block: null, quotes: "\"'" },
+  conf:   { line: ["#", ";"], block: null, quotes: "\"'" },
+  css:    { line: [], block: ["/*", "*/"], quotes: "\"'" },
+  json:   { line: [], block: null, quotes: "\"" },
+};
+function langFor(path) {
+  const ext = (path.split(".").pop() || "").toLowerCase();
+  return FAMILIES[ext] || null;
+}
+/** Tokenize one code line into {type, text} runs for a given family. */
+function scanLine(src, fam) {
+  const cfg = SCAN_CFG[fam];
+  const out = [];
+  const n = src.length;
+  let i = 0;
+  const isWord = (c) => c && /[A-Za-z0-9_$]/.test(c);
+  while (i < n) {
+    const ch = src[i];
+    // Line comment — runs to end of line.
+    let lc = null;
+    for (const m of cfg.line) if (src.startsWith(m, i)) { lc = m; break; }
+    if (lc) { out.push({ type: "com", text: src.slice(i) }); break; }
+    // Block comment — only its visible portion on this line.
+    if (cfg.block && src.startsWith(cfg.block[0], i)) {
+      const end = src.indexOf(cfg.block[1], i + cfg.block[0].length);
+      const stop = end === -1 ? n : end + cfg.block[1].length;
+      out.push({ type: "com", text: src.slice(i, stop) });
+      i = stop; continue;
+    }
+    // String — consume through the matching quote, honouring backslash escapes.
+    if (cfg.quotes.includes(ch)) {
+      let j = i + 1;
+      while (j < n) { if (src[j] === "\\") { j += 2; continue; } if (src[j] === ch) { j++; break; } j++; }
+      out.push({ type: "str", text: src.slice(i, j) });
+      i = j; continue;
+    }
+    // Number — not when it's part of an identifier.
+    if (ch >= "0" && ch <= "9" && !isWord(src[i - 1])) {
+      const m = /^(0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*\.?\d*(?:[eE][+-]?\d+)?)/.exec(src.slice(i));
+      if (m) { out.push({ type: "num", text: m[0] }); i += m[0].length; continue; }
+    }
+    // Identifier / keyword.
+    if (/[A-Za-z_$]/.test(ch)) {
+      const m = /^[A-Za-z0-9_$]+/.exec(src.slice(i));
+      const w = m[0];
+      out.push({ type: KEYWORDS[fam].has(w) ? "kw" : "txt", text: w });
+      i += w.length; continue;
+    }
+    out.push({ type: "txt", text: ch });
+    i++;
+  }
+  return out;
+}
+/** Minimal markup tokenizer: comments, tag names, and attribute strings. */
+function scanMarkup(src) {
+  const out = [];
+  const n = src.length;
+  let i = 0;
+  while (i < n) {
+    if (src.startsWith("<!--", i)) {
+      const end = src.indexOf("-->", i + 4);
+      const stop = end === -1 ? n : end + 3;
+      out.push({ type: "com", text: src.slice(i, stop) }); i = stop; continue;
+    }
+    if (src[i] === "<") {
+      const m = /^<\/?[A-Za-z][\w:.-]*/.exec(src.slice(i));
+      if (m) {
+        out.push({ type: "kw", text: m[0] }); i += m[0].length;
+        while (i < n && src[i] !== ">") {
+          const c = src[i];
+          if (c === '"' || c === "'") {
+            let j = i + 1; while (j < n && src[j] !== c) j++;
+            if (j < n) j++;
+            out.push({ type: "str", text: src.slice(i, j) }); i = j; continue;
+          }
+          out.push({ type: "txt", text: c }); i++;
+        }
+        if (i < n) { out.push({ type: "kw", text: ">" }); i++; }
+        continue;
+      }
+    }
+    out.push({ type: "txt", text: src[i] }); i++;
+  }
+  return out;
+}
+/** Build a DocumentFragment of highlighted code (textContent keeps it XSS-safe). */
+function highlight(content, lang) {
+  const frag = document.createDocumentFragment();
+  if (!lang || content === "") { frag.append(document.createTextNode(content)); return frag; }
+  const tokens = lang === "markup" ? scanMarkup(content) : scanLine(content, lang);
+  let plain = "";
+  const flush = () => { if (plain) { frag.append(document.createTextNode(plain)); plain = ""; } };
+  for (const tk of tokens) {
+    if (tk.type === "txt") { plain += tk.text; continue; }
+    flush();
+    frag.append(el("span", { class: "tok-" + tk.type, text: tk.text }));
+  }
+  flush();
+  return frag;
+}
+
+/** The theme actually showing: an explicit override, else whatever the OS asks for. */
+function effectiveTheme() {
+  const t = document.documentElement.dataset.theme;
+  if (t === "light" || t === "dark") return t;
+  return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem("revgate-theme", theme); } catch (e) { /* storage blocked */ }
+  updateThemeToggle();
+}
+/** Show the icon for the theme a click would switch TO. */
+function updateThemeToggle() {
+  const btn = document.getElementById("theme-toggle");
+  if (!btn) return;
+  const goingToLight = effectiveTheme() === "dark";
+  btn.textContent = goingToLight ? "☀" : "☾";
+  const label = goingToLight ? "Switch to light theme" : "Switch to dark theme";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+}
+
+async function load() {
+  const res = await fetch("/api/review");
+  state.ctx = await res.json();
+  render();
+}
+
+function render() {
+  const app = $("#app");
+  app.innerHTML = "";
+  const { ctx } = state;
+
+  const changed = ctx.files;
+  const totalAdd = changed.reduce((s, f) => s + f.additions, 0);
+  const totalDel = changed.reduce((s, f) => s + f.deletions, 0);
+
+  app.append(el("header", {}, [
+    el("span", { class: "title", text: "revgate" }),
+    el("span", { class: "meta", text: `session ${ctx.payload.sessionId}` }),
+    ctx.branch ? el("span", { class: "badge", text: ctx.branch }) : null,
+    el("span", { class: "spacer" }),
+    el("span", { class: "badge", text: `${changed.length} files` }),
+    el("span", { class: "badge", text: `+${totalAdd} −${totalDel}` }),
+    el("button", { id: "theme-toggle", class: "themetoggle", type: "button",
+      onclick: () => applyTheme(effectiveTheme() === "dark" ? "light" : "dark") }),
+  ]));
+  updateThemeToggle();
+
+  if (changed.length === 0) {
+    app.append(el("div", { class: "empty", text: ctx.note || "No changes to review." }));
+    return;
+  }
+
+  const layout = el("div", { class: "layout" });
+  const aside = el("aside", {}, [el("h3", { text: "Files changed" })]);
+  for (const node of renderTree(buildTree(changed), 0)) aside.append(node);
+
+  // The diff pane stays empty until a file is picked from the tree.
+  const main = el("main", { id: "diff-pane" }, [
+    el("div", { class: "empty", text: "Select a file to view its diff." }),
+  ]);
+
+  layout.append(aside, main, renderRemarksPanel());
+  app.append(layout, renderReviewBar());
+  updateBubbles();
+}
+
+/**
+ * Group flat diff files into a nested {dirs, files} tree keyed by path segments,
+ * so the sidebar can mirror the on-disk layout instead of git's diff order.
+ */
+function buildTree(files) {
+  const root = { dirs: new Map(), files: [] };
+  files.forEach((f, index) => {
+    const parts = f.path.split("/");
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!node.dirs.has(parts[i])) node.dirs.set(parts[i], { dirs: new Map(), files: [] });
+      node = node.dirs.get(parts[i]);
+    }
+    node.files.push({ file: f, index, name: parts[parts.length - 1] });
+  });
+  return root;
+}
+
+/** Render a tree node to DOM rows: folders first, then files, each sorted A→Z (disk order). */
+function renderTree(node, depth) {
+  const rows = [];
+  const pad = (d) => `padding-left:${8 + d * 14}px`;
+
+  for (const name of [...node.dirs.keys()].sort((a, b) => a.localeCompare(b))) {
+    const twist = el("span", { class: "twist", text: "▾" });
+    const folder = el("div", { class: "folderrow", tabindex: "0", style: pad(depth) },
+      [twist, el("span", { class: "foldername", text: name })]);
+    const wrap = el("div", {});
+    for (const r of renderTree(node.dirs.get(name), depth + 1)) wrap.append(r);
+    const toggle = () => {
+      const hidden = wrap.style.display === "none";
+      wrap.style.display = hidden ? "" : "none";
+      twist.textContent = hidden ? "▾" : "▸";
+    };
+    folder.addEventListener("click", toggle);
+    folder.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+    });
+    rows.push(folder, wrap);
+  }
+
+  for (const { file, index, name } of node.files.slice().sort((a, b) => a.name.localeCompare(b.name))) {
+    rows.push(renderFileRow(file, index, name, depth));
+  }
+  return rows;
+}
+
+function renderFileRow(f, index, name, depth) {
+  return el("div", {
+    class: "filerow", tabindex: "0", role: "button", "data-fileidx": String(index),
+    style: `padding-left:${8 + depth * 14}px`,
+    onclick: () => selectFile(index),
+    onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectFile(index); } },
+  }, [
+    el("span", { class: "fname", text: name, title: f.path }),
+    el("span", { class: "cbubble hidden", "data-cbubble": f.path }),
+    state.ctx.isRepo
+      ? el("span", { class: `sdot ${stagedClass(f.staged)}`, "data-sdot": f.path,
+          title: stagedTitle(f.staged) })
+      : null,
+    el("span", { class: "adds", text: `+${f.additions}` }),
+    el("span", { class: "dels", text: `−${f.deletions}` }),
+  ]);
+}
+
+const stagedClass = (s) => (s === "yes" ? "yes" : s === "partial" ? "partial" : "none");
+const stagedTitle = (s) =>
+  s === "yes" ? "Staged" : s === "partial" ? "Partially staged" : "Not staged";
+
+/** Show one file's diff, mark its row selected, and restore any comments on it. */
+function selectFile(index) {
+  state.selected = index;
+  document.querySelectorAll(".filerow.selected").forEach((r) => r.classList.remove("selected"));
+  const row = document.querySelector(`.filerow[data-fileidx="${index}"]`);
+  if (row) row.classList.add("selected");
+
+  const pane = document.getElementById("diff-pane");
+  pane.innerHTML = "";
+  pane.append(renderFile(state.ctx.files[index], `file-${index}`));
+  restoreComments(index);
+}
+
+/** Re-insert previously saved comments for the file now showing in the diff pane. */
+function restoreComments(index) {
+  const file = state.ctx.files[index].path;
+  const seen = new Set();
+  for (const c of state.comments) {
+    if (c.file !== file) continue;
+    const key = `${c.side}::${c.startLine}::${c.endLine}`;
+    if (seen.has(key)) continue; // insertExisting renders all comments on the range at once
+    seen.add(key);
+    const row = document.querySelector(`#diff-pane tr.line[data-lk="${c.side}::${c.endLine}"]`);
+    if (row) insertExisting(row, c.file, c.startLine, c.endLine, c.side);
+  }
+}
+
+function renderFile(f, anchor) {
+  const box = el("div", { class: "file", id: anchor });
+  const head = el("div", { class: "file-head" }, [ el("span", { class: "path", text: f.path }) ]);
+  if (f.isNew) head.append(el("span", { class: "tag new", text: "added" }));
+  if (f.isDeleted) head.append(el("span", { class: "tag del", text: "deleted" }));
+  if (f.isRenamed) head.append(el("span", { class: "tag", text: "renamed" }));
+  if (f.isBinary) head.append(el("span", { class: "tag", text: "binary" }));
+  if (state.ctx.isRepo) { head.append(el("span", { class: "spacer" }), renderStageToggle(f)); }
+  box.append(head);
+
+  if (f.isBinary || f.hunks.length === 0) {
+    box.append(el("div", { class: "empty", text: f.isBinary ? "Binary file — not shown." : "No textual changes." }));
+    return box;
+  }
+
+  const lang = langFor(f.path);
+  const table = el("table", { class: "diff" });
+  const tbody = el("tbody");
+  for (const h of f.hunks) {
+    const hr = el("tr", { class: "hunk" });
+    hr.append(el("td", { class: "gutter" }), el("td", { class: "gutter" }),
+      el("td", { class: "code", text: h.header }));
+    tbody.append(hr);
+    for (const line of h.lines) tbody.append(renderLine(f, line, lang));
+  }
+  table.append(tbody);
+  box.append(table);
+  return box;
+}
+
+/** A checkbox reflecting (and toggling) whether this file's changes are staged. */
+function renderStageToggle(f) {
+  const cb = el("input", { type: "checkbox", "data-stage": f.path });
+  cb.checked = f.staged === "yes";
+  cb.indeterminate = f.staged === "partial";
+  cb.addEventListener("change", () => toggleStage(f, cb.checked));
+  return el("label", { class: "stage", title: "Stage or unstage this file in git" },
+    [cb, el("span", { text: "Staged" })]);
+}
+
+/** Send the stage/unstage request, then refresh every file's indicator from git. */
+async function toggleStage(f, staged) {
+  try {
+    const res = await fetch(staged ? "/api/stage" : "/api/unstage", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: f.path }),
+    });
+    const data = await res.json();
+    if (data && data.states) applyStageStates(data.states);
+  } catch (e) {
+    /* Leave the checkbox as the user set it; the next toggle will reconcile. */
+  }
+}
+
+/** Push fresh staging states from the server into state + all on-screen widgets. */
+function applyStageStates(states) {
+  for (const file of state.ctx.files) file.staged = states[file.path] ?? "no";
+  document.querySelectorAll("[data-sdot]").forEach((dot) => {
+    const s = states[dot.getAttribute("data-sdot")] ?? "no";
+    dot.className = `sdot ${stagedClass(s)}`;
+    dot.title = stagedTitle(s);
+  });
+  document.querySelectorAll("[data-stage]").forEach((cb) => {
+    const s = states[cb.getAttribute("data-stage")] ?? "no";
+    cb.checked = s === "yes";
+    cb.indeterminate = s === "partial";
+  });
+}
+
+function renderLine(f, line, lang) {
+  const cls = line.type === "add" ? "add" : line.type === "del" ? "del" : "";
+  const sign = line.type === "add" ? "+" : line.type === "del" ? "−" : " ";
+  const side = line.type === "del" ? "old" : "new";
+  const lineNo = side === "old" ? line.oldLine : line.newLine;
+  const commentable = line.type !== "context" && lineNo != null;
+
+  const attrs = { class: `line ${cls}` };
+  if (lineNo != null) attrs["data-lk"] = `${side}::${lineNo}`;
+  if (commentable) { attrs["data-side"] = side; attrs["data-lineno"] = String(lineNo); }
+  const tr = el("tr", attrs);
+
+  const codeCell = el("td", { class: "code" }, [ el("span", { class: "sign", text: sign }) ]);
+  codeCell.append(highlight(line.content, lang));
+
+  const gutterOld = el("td", { class: "gutter", text: line.oldLine ?? "" });
+  const gutterNew = el("td", { class: "gutter", text: line.newLine ?? "" });
+
+  if (commentable) {
+    const btn = el("button", { class: "addbtn", title: "Add comment", text: "+",
+      onclick: () => openCommentBox(tr, f.path, lineNo, lineNo, side) });
+    codeCell.prepend(btn);
+    // Drag either gutter across same-side lines to comment on a range.
+    const startDrag = (e) => beginRangeDrag(e, f.path, side, lineNo);
+    gutterOld.addEventListener("mousedown", startDrag);
+    gutterNew.addEventListener("mousedown", startDrag);
+    tr.addEventListener("mouseenter", () => extendRangeDrag(side, lineNo));
+  }
+
+  tr.append(gutterOld, gutterNew, codeCell);
+  return tr;
+}
+
+/* ---- Range selection: drag a gutter across same-side lines -------------- */
+let rangeDrag = null; // { file, side, start, end } while the mouse is held down
+
+function beginRangeDrag(e, file, side, lineNo) {
+  if (e.button !== 0) return; // left button only
+  e.preventDefault();         // suppress native text selection while dragging
+  rangeDrag = { file, side, start: lineNo, end: lineNo };
+  paintRange();
+}
+function extendRangeDrag(side, lineNo) {
+  if (!rangeDrag || side !== rangeDrag.side) return; // ranges stay on one side
+  rangeDrag.end = lineNo;
+  paintRange();
+}
+/** Wash the rows currently covered by the in-progress selection. */
+function paintRange() {
+  document.querySelectorAll("#diff-pane tr.line.selrange").forEach((r) => r.classList.remove("selrange"));
+  if (!rangeDrag) return;
+  const lo = Math.min(rangeDrag.start, rangeDrag.end);
+  const hi = Math.max(rangeDrag.start, rangeDrag.end);
+  document.querySelectorAll(`#diff-pane tr.line[data-side="${rangeDrag.side}"]`).forEach((r) => {
+    const n = Number(r.getAttribute("data-lineno"));
+    if (n >= lo && n <= hi) r.classList.add("selrange");
+  });
+}
+/** On mouse release, open a comment box for the selected range (or single line). */
+function finishRangeDrag() {
+  if (!rangeDrag) return;
+  const { file, side } = rangeDrag;
+  const lo = Math.min(rangeDrag.start, rangeDrag.end);
+  const hi = Math.max(rangeDrag.start, rangeDrag.end);
+  rangeDrag = null;
+  document.querySelectorAll("#diff-pane tr.line.selrange").forEach((r) => r.classList.remove("selrange"));
+  const anchor = document.querySelector(`#diff-pane tr.line[data-side="${side}"][data-lineno="${hi}"]`);
+  if (anchor) openCommentBox(anchor, file, lo, hi, side);
+}
+
+function openCommentBox(afterRow, file, startLine, endLine, side) {
+  // Avoid stacking multiple boxes on the same row.
+  if (afterRow.nextSibling && afterRow.nextSibling.dataset && afterRow.nextSibling.dataset.editor) return;
+  const label = rangeLabel(startLine, endLine);
+  const ta = el("textarea", { placeholder: `Comment on ${file}:${label}…` });
+  const row = el("tr", {});
+  row.dataset.editor = "1";
+  const td = el("td", { colspan: "3", class: "wide" });
+  const boxWrap = el("div", { class: "commentbox" }, [ ta,
+    el("div", { class: "row" }, [
+      el("button", { class: "accent", text: "Add comment", onclick: () => {
+        const body = ta.value.trim();
+        if (!body) return;
+        state.comments.push({ file, startLine, endLine, side, body });
+        row.remove();
+        insertExisting(afterRow, file, startLine, endLine, side);
+        updateBubbles();
+      }}),
+      el("button", { class: "ghost", text: "Cancel", onclick: () => row.remove() }),
+    ]),
+  ]);
+  td.append(boxWrap);
+  row.append(td);
+  afterRow.after(row);
+  ta.focus();
+}
+
+function insertExisting(afterRow, file, startLine, endLine, side) {
+  // Render every stored comment for this range right under its last line.
+  let cursor = afterRow;
+  const mine = state.comments.filter(
+    (c) => c.file === file && c.startLine === startLine && c.endLine === endLine && c.side === side);
+  const marker = `${file}:${side}:${startLine}:${endLine}`;
+  // Clear any previously rendered "existing" rows for this range first.
+  while (cursor.nextSibling && cursor.nextSibling.dataset && cursor.nextSibling.dataset.existing === marker) {
+    cursor.nextSibling.remove();
+  }
+  for (const c of mine) {
+    const row = el("tr", {});
+    row.dataset.existing = marker;
+    const td = el("td", { colspan: "3", class: "wide" });
+    const loc = el("span", { class: "loc", text: `L${rangeLabel(c.startLine, c.endLine)}` });
+    td.append(el("div", { class: "existing" }, [
+      el("div", { class: "body" }, [loc, document.createTextNode(" " + c.body)]),
+      el("span", { class: "del", text: "delete", onclick: () => {
+        state.comments = state.comments.filter((x) => x !== c);
+        row.remove();
+        updateBubbles();
+      }}),
+    ]));
+    row.append(td);
+    cursor.after(row);
+    cursor = row;
+  }
+}
+
+function updateBubbles() {
+  const counts = {};
+  for (const c of state.comments) counts[c.file] = (counts[c.file] || 0) + 1;
+  document.querySelectorAll("[data-cbubble]").forEach((b) => {
+    const n = counts[b.getAttribute("data-cbubble")] || 0;
+    b.textContent = n;
+    b.className = n ? "cbubble" : "cbubble hidden";
+    b.style.display = n ? "" : "none";
+  });
+  renderRemarksList();
+}
+
+/* ---- Right-rail remarks panel: every inline comment, across all files ---- */
+function renderRemarksPanel() {
+  return el("section", { class: "remarks", "aria-label": "All remarks" }, [
+    el("h3", { id: "remarks-title", text: "Remarks" }),
+    el("div", { id: "remarks-list" }),
+  ]);
+}
+
+/** Rebuild the remarks list from state.comments, grouped by file in diff order. */
+function renderRemarksList() {
+  const box = document.getElementById("remarks-list");
+  if (!box) return; // panel not mounted (e.g. an empty review)
+  const title = document.getElementById("remarks-title");
+  if (title) title.textContent = state.comments.length ? `Remarks (${state.comments.length})` : "Remarks";
+
+  box.innerHTML = "";
+  if (state.comments.length === 0) {
+    box.append(el("div", { class: "empty", text: "No remarks yet. Click + on a diff line to add one." }));
+    return;
+  }
+  for (const f of state.ctx.files) {
+    const mine = state.comments
+      .filter((c) => c.file === f.path)
+      .sort((a, b) => a.endLine - b.endLine || a.startLine - b.startLine);
+    if (mine.length === 0) continue;
+    box.append(el("div", { class: "rfile", text: f.path, title: f.path }));
+    for (const c of mine) box.append(renderRemarkRow(c));
+  }
+}
+
+function renderRemarkRow(c) {
+  const snippet = (c.body.split("\n")[0] || "").trim();
+  return el("div", {
+    class: "remark", tabindex: "0", role: "button",
+    onclick: () => navigateToRemark(c),
+    onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigateToRemark(c); } },
+  }, [
+    el("span", { class: "rloc", text: `L${rangeLabel(c.startLine, c.endLine)}` }),
+    el("span", { class: "rbody", text: snippet, title: c.body }),
+    el("span", { class: "rdel", role: "button", "aria-label": "Delete remark", title: "Delete remark",
+      text: "✕", onclick: (e) => { e.stopPropagation(); deleteRemark(c); } }),
+  ]);
+}
+
+/** Remove a remark from state, refresh the panel, and drop its inline row if shown. */
+function deleteRemark(c) {
+  state.comments = state.comments.filter((x) => x !== c);
+  refreshRangeInPane(c);
+  updateBubbles();
+}
+
+/** If the remark's file is the one on screen, re-render that range's inline comments. */
+function refreshRangeInPane(c) {
+  const pane = document.getElementById("diff-pane");
+  if (!pane) return;
+  const anchor = pane.querySelector(`tr.line[data-lk="${c.side}::${c.endLine}"]`);
+  if (anchor) insertExisting(anchor, c.file, c.startLine, c.endLine, c.side);
+}
+
+/** Open the remark's file (if not already shown), scroll to its line, and flash it. */
+function navigateToRemark(c) {
+  const index = state.ctx.files.findIndex((f) => f.path === c.file);
+  if (index === -1) return;
+  if (state.selected !== index) selectFile(index);
+
+  const pane = document.getElementById("diff-pane");
+  if (!pane) return;
+  const lo = Math.min(c.startLine, c.endLine);
+  const hi = Math.max(c.startLine, c.endLine);
+  const rows = [...pane.querySelectorAll(`tr.line[data-side="${c.side}"]`)].filter((r) => {
+    const n = Number(r.getAttribute("data-lineno"));
+    return n >= lo && n <= hi;
+  });
+  if (rows.length === 0) return;
+
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  rows[0].scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+  rows.forEach((r) => r.classList.add("flash"));
+  setTimeout(() => rows.forEach((r) => r.classList.remove("flash")), 1200);
+}
+
+function renderReviewBar() {
+  const summary = el("textarea", { id: "summary",
+    placeholder: "Overall review summary — what should Copilot change or keep? (optional)" });
+
+  const submit = (decision) => async () => {
+    const payload = { decision, summary: summary.value, comments: state.comments };
+    if (decision === "request_changes" && !summary.value.trim() && state.comments.length === 0) {
+      if (!confirm("Request changes with no notes? Copilot won't know what to change.")) return;
+    }
+    await fetch("/api/submit", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload) });
+    state.submitted = true;
+    showDone(decision);
+  };
+
+  return el("div", { class: "reviewbar" }, [
+    summary,
+    el("div", { class: "actions" }, [
+      el("button", { class: "primary", text: "Approve", title: "Copilot stops", onclick: submit("approve") }),
+      el("button", { class: "warn", text: "Request changes", title: "Copilot takes another turn on your feedback", onclick: submit("request_changes") }),
+    ]),
+  ]);
+}
+
+function showDone(decision) {
+  const app = $("#app");
+  app.innerHTML = "";
+  const msg = decision === "approve"
+    ? "Approved. Copilot will stop here."
+    : "Feedback sent. Copilot is taking another turn on your review.";
+  app.append(el("div", { class: "done" }, [
+    el("h1", { text: "Review submitted ✓" }),
+    el("p", { text: msg }),
+    el("p", { text: "You can close this tab." }),
+  ]));
+}
+
+// A range drag can end anywhere on the page, so listen at the document level.
+document.addEventListener("mouseup", finishRangeDrag);
+
+load().catch((e) => {
+  $("#app").innerHTML = `<div class="empty">Failed to load review: ${e.message}</div>`;
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+{
+  "name": "revgate",
+  "version": "0.1.0",
+  "description": "Human-in-the-loop, GitHub-style review gate for GitHub Copilot CLI agent turns. Fires from the agentStop hook, opens a local review UI, and feeds your review back to Copilot as the next prompt.",
+  "type": "module",
+  "bin": {
+    "revgate": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "demo": "tsx src/index.ts --demo"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "public",
+    "hooks"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
