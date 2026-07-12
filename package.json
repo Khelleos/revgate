@@ -10,7 +10,8 @@
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "demo": "tsx src/index.ts --demo"
+    "demo": "tsx src/index.ts --demo",
+    "demo:plan": "tsx src/index.ts --demo --plan"
   },
   "engines": {
     "node": ">=18"
@@ -18,7 +19,8 @@
   "files": [
     "dist",
     "public",
-    "hooks"
+    "hooks",
+    "copilot-plugin"
   ],
   "license": "MIT",
   "devDependencies": {

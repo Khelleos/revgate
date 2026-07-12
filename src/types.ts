@@ -9,16 +9,41 @@ export interface HookPayload {
   cwd: string;
   transcriptPath?: string;
   stopReason?: string;
+  /**
+   * The tool Copilot is about to run, on a `preToolUse` hook. We only gate the
+   * plan tool (`exit_plan_mode`) and pass every other tool straight through.
+   */
+  toolName?: string;
+  /**
+   * Plan markdown, when the hook fires on a plan-proposal event (e.g. an
+   * ExitPlanMode-style tool call). Present => revgate reviews the plan instead
+   * of a git diff. See index.ts:readHookPayload for the fields we accept.
+   */
+  plan?: string;
 }
 
-/** What the hook writes back to stdout to steer Copilot's next move. */
+/**
+ * What the `agentStop` hook writes to stdout to steer Copilot's next move.
+ * (The `preToolUse` plan hook uses PermissionDecision instead — see below.)
+ */
 export interface HookDecision {
   /** "block" forces another agent turn using `reason` as the prompt. */
   decision: "block" | "allow";
   reason?: string;
 }
 
-export type LineType = "add" | "del" | "context";
+/**
+ * What a `preToolUse` hook writes to stdout to allow or veto the pending tool.
+ * Copilot's contract differs from `agentStop`: "deny" blocks the tool and feeds
+ * `permissionDecisionReason` back to the agent; "allow" lets it run.
+ */
+export interface PermissionDecision {
+  permissionDecision: "allow" | "deny" | "ask";
+  permissionDecisionReason?: string;
+}
+
+/** "plan" lines belong to a synthetic plan document, not a git diff (see plan.ts). */
+export type LineType = "add" | "del" | "context" | "plan";
 
 export interface DiffLine {
   type: LineType;

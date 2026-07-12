@@ -16,6 +16,10 @@ export interface ReviewContext {
   branch: string | null;
   files: DiffFile[];
   isRepo: boolean;
+  /** "diff" reviews the working tree; "plan" reviews a proposed plan document. */
+  mode: "diff" | "plan";
+  /** Short heading for a plan review (mode === "plan" only). */
+  planTitle?: string;
   note?: string;
 }
 

@@ -144,6 +144,8 @@
   table.diff td { padding: 0 10px; white-space: pre-wrap; word-break: break-word; vertical-align: top; }
   .gutter { width: 1%; text-align: right; color: var(--muted); user-select: none;
     background: var(--bg2); border-right: 1px solid var(--border); min-width: 42px; }
+  /* Plan review is a single synthetic document — collapse the unused old-line gutter. */
+  table.diff.plan td.gutter.old { min-width: 0; width: 0; padding: 0; border-right: none; }
   tr.add td.code { background: var(--add-bg); } tr.add td.gutter { background: var(--add-gutter); }
   tr.del td.code { background: var(--del-bg); } tr.del td.gutter { background: var(--del-gutter); }
   tr.hunk td { background: var(--bg3); color: var(--muted); padding: 2px 10px; }
@@ -246,6 +248,7 @@ const el = (tag, props = {}, children = []) => {
   for (const c of [].concat(children)) if (c) n.append(c);
   return n;
 };
+const isPlan = () => state.ctx && state.ctx.mode === "plan";
 const commentKey = (c) => `${c.file}::${c.side}::${c.startLine}::${c.endLine}`;
 /** "12" for a single line, "12-16" for a range. */
 const rangeLabel = (a, b) => (a === b ? `${a}` : `${a}-${b}`);
@@ -422,16 +425,18 @@ function render() {
   const { ctx } = state;
 
   const changed = ctx.files;
+  const plan = isPlan();
   const totalAdd = changed.reduce((s, f) => s + f.additions, 0);
   const totalDel = changed.reduce((s, f) => s + f.deletions, 0);
+  const lineCount = plan ? changed[0].hunks.reduce((s, h) => s + h.lines.length, 0) : 0;
 
   app.append(el("header", {}, [
     el("span", { class: "title", text: "revgate" }),
-    el("span", { class: "meta", text: `session ${ctx.payload.sessionId}` }),
-    ctx.branch ? el("span", { class: "badge", text: ctx.branch }) : null,
+    el("span", { class: "meta", text: plan ? (ctx.planTitle || "Plan review") : `session ${ctx.payload.sessionId}` }),
+    !plan && ctx.branch ? el("span", { class: "badge", text: ctx.branch }) : null,
     el("span", { class: "spacer" }),
-    el("span", { class: "badge", text: `${changed.length} files` }),
-    el("span", { class: "badge", text: `+${totalAdd} −${totalDel}` }),
+    plan ? el("span", { class: "badge", text: "Plan review" }) : el("span", { class: "badge", text: `${changed.length} files` }),
+    plan ? el("span", { class: "badge", text: `${lineCount} lines` }) : el("span", { class: "badge", text: `+${totalAdd} −${totalDel}` }),
     el("button", { id: "theme-toggle", class: "themetoggle", type: "button",
       onclick: () => applyTheme(effectiveTheme() === "dark" ? "light" : "dark") }),
   ]));
@@ -443,16 +448,18 @@ function render() {
   }
 
   const layout = el("div", { class: "layout" });
-  const aside = el("aside", {}, [el("h3", { text: "Files changed" })]);
+  const aside = el("aside", {}, [el("h3", { text: plan ? "Plan" : "Files changed" })]);
   for (const node of renderTree(buildTree(changed), 0)) aside.append(node);
 
-  // The diff pane stays empty until a file is picked from the tree.
+  // The diff pane stays empty until a file is picked (a plan auto-opens below).
   const main = el("main", { id: "diff-pane" }, [
     el("div", { class: "empty", text: "Select a file to view its diff." }),
   ]);
 
   layout.append(aside, main, renderRemarksPanel());
   app.append(layout, renderReviewBar());
+  // A plan is a single document — show it immediately rather than making the user click.
+  if (plan) selectFile(0);
   updateBubbles();
 }
 
@@ -516,8 +523,9 @@ function renderFileRow(f, index, name, depth) {
       ? el("span", { class: `sdot ${stagedClass(f.staged)}`, "data-sdot": f.path,
           title: stagedTitle(f.staged) })
       : null,
-    el("span", { class: "adds", text: `+${f.additions}` }),
-    el("span", { class: "dels", text: `−${f.deletions}` }),
+    // A plan has no add/del counts — skip the +0 −0 noise.
+    isPlan() ? null : el("span", { class: "adds", text: `+${f.additions}` }),
+    isPlan() ? null : el("span", { class: "dels", text: `−${f.deletions}` }),
   ]);
 }
 
@@ -567,14 +575,18 @@ function renderFile(f, anchor) {
     return box;
   }
 
-  const lang = langFor(f.path);
-  const table = el("table", { class: "diff" });
+  const plan = isPlan();
+  const lang = plan ? null : langFor(f.path);
+  const table = el("table", { class: plan ? "diff plan" : "diff" });
   const tbody = el("tbody");
   for (const h of f.hunks) {
-    const hr = el("tr", { class: "hunk" });
-    hr.append(el("td", { class: "gutter" }), el("td", { class: "gutter" }),
-      el("td", { class: "code", text: h.header }));
-    tbody.append(hr);
+    // A plan has no hunk headers — it reads as one continuous document.
+    if (!plan) {
+      const hr = el("tr", { class: "hunk" });
+      hr.append(el("td", { class: "gutter old" }), el("td", { class: "gutter new" }),
+        el("td", { class: "code", text: h.header }));
+      tbody.append(hr);
+    }
     for (const line of h.lines) tbody.append(renderLine(f, line, lang));
   }
   table.append(tbody);
@@ -623,9 +635,10 @@ function applyStageStates(states) {
 
 function renderLine(f, line, lang) {
   const cls = line.type === "add" ? "add" : line.type === "del" ? "del" : "";
-  const sign = line.type === "add" ? "+" : line.type === "del" ? "−" : " ";
+  const sign = line.type === "add" ? "+" : line.type === "del" ? "−" : line.type === "plan" ? "" : " ";
   const side = line.type === "del" ? "old" : "new";
   const lineNo = side === "old" ? line.oldLine : line.newLine;
+  // Plan lines are all commentable; diff context lines are not.
   const commentable = line.type !== "context" && lineNo != null;
 
   const attrs = { class: `line ${cls}` };
@@ -636,8 +649,8 @@ function renderLine(f, line, lang) {
   const codeCell = el("td", { class: "code" }, [ el("span", { class: "sign", text: sign }) ]);
   codeCell.append(highlight(line.content, lang));
 
-  const gutterOld = el("td", { class: "gutter", text: line.oldLine ?? "" });
-  const gutterNew = el("td", { class: "gutter", text: line.newLine ?? "" });
+  const gutterOld = el("td", { class: "gutter old", text: line.oldLine ?? "" });
+  const gutterNew = el("td", { class: "gutter new", text: line.newLine ?? "" });
 
   if (commentable) {
     const btn = el("button", { class: "addbtn", title: "Add comment", text: "+",
@@ -841,13 +854,19 @@ function navigateToRemark(c) {
 }
 
 function renderReviewBar() {
+  const plan = isPlan();
   const summary = el("textarea", { id: "summary",
-    placeholder: "Overall review summary — what should Copilot change or keep? (optional)" });
+    placeholder: plan
+      ? "Overall feedback — what should the agent change in this plan? (optional)"
+      : "Overall review summary — what should Copilot change or keep? (optional)" });
 
   const submit = (decision) => async () => {
     const payload = { decision, summary: summary.value, comments: state.comments };
     if (decision === "request_changes" && !summary.value.trim() && state.comments.length === 0) {
-      if (!confirm("Request changes with no notes? Copilot won't know what to change.")) return;
+      const q = plan
+        ? "Request changes with no notes? The agent won't know what to revise."
+        : "Request changes with no notes? Copilot won't know what to change.";
+      if (!confirm(q)) return;
     }
     await fetch("/api/submit", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(payload) });
@@ -858,8 +877,11 @@ function renderReviewBar() {
   return el("div", { class: "reviewbar" }, [
     summary,
     el("div", { class: "actions" }, [
-      el("button", { class: "primary", text: "Approve", title: "Copilot stops", onclick: submit("approve") }),
-      el("button", { class: "warn", text: "Request changes", title: "Copilot takes another turn on your feedback", onclick: submit("request_changes") }),
+      el("button", { class: "primary", text: plan ? "Approve plan" : "Approve",
+        title: plan ? "The agent proceeds with this plan" : "Copilot stops", onclick: submit("approve") }),
+      el("button", { class: "warn", text: "Request changes",
+        title: plan ? "The agent revises the plan using your feedback" : "Copilot takes another turn on your feedback",
+        onclick: submit("request_changes") }),
     ]),
   ]);
 }
@@ -867,9 +889,10 @@ function renderReviewBar() {
 function showDone(decision) {
   const app = $("#app");
   app.innerHTML = "";
+  const plan = isPlan();
   const msg = decision === "approve"
-    ? "Approved. Copilot will stop here."
-    : "Feedback sent. Copilot is taking another turn on your review.";
+    ? (plan ? "Plan approved. The agent will proceed." : "Approved. Copilot will stop here.")
+    : (plan ? "Feedback sent. The agent is revising the plan." : "Feedback sent. Copilot is taking another turn on your review.");
   app.append(el("div", { class: "done" }, [
     el("h1", { text: "Review submitted ✓" }),
     el("p", { text: msg }),

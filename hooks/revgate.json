@@ -1,6 +1,15 @@
 {
   "version": 1,
   "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "comment": "revgate: intercept exit_plan_mode and review the proposed plan before Copilot implements it. Other tools pass straight through. Timeout fails open.",
+        "bash": "node \"$HOME/path/to/revgate/dist/index.js\" copilot-plan",
+        "powershell": "node \"$env:USERPROFILE\\path\\to\\revgate\\dist\\index.js\" copilot-plan",
+        "timeoutSec": 3600
+      }
+    ],
     "agentStop": [
       {
         "type": "command",

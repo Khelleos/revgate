@@ -50,11 +50,70 @@ Non-interactive / scripted:
 ## Verify
 
 ```powershell
-node dist\index.js --demo
+node dist\index.js --demo            # diff review against your working tree
+node dist\index.js --demo --plan     # plan review, using a bundled sample plan
 ```
 
 This opens the review UI directly so you can confirm it works before relying on
 the hook.
+
+## Plan review
+
+revgate can also gate the agent *before* it writes code — reviewing the **plan**
+it proposes instead of the resulting diff. Approve and the agent proceeds with
+the plan; request changes and your feedback becomes the agent's next prompt, so
+it revises the plan first.
+
+This runs off Copilot's **`preToolUse`** hook via a dedicated entry point,
+`revgate copilot-plan`. The installer wires it alongside the diff gate, so with a
+normal install you get **both**: a plan gate up front and a diff gate at the end
+of the turn.
+
+How it works:
+
+1. In Copilot CLI, `Shift+Tab` enters plan mode; the agent drafts a plan and
+   calls the `exit_plan_mode` tool to leave it.
+2. `preToolUse` fires *before* that tool runs. The hook has no matcher and fires
+   for every tool, so `revgate copilot-plan` self-filters: any tool other than
+   `exit_plan_mode` is passed straight through (`permissionDecision: allow`).
+3. For `exit_plan_mode`, revgate resolves the plan text — from the hook payload
+   (`toolArgs.plan` / `tool_input.plan`) if present, otherwise from
+   `~/.copilot/session-state/<sessionId>/plan.md`, where Copilot writes it — and
+   opens the review UI.
+4. **Approve** → `permissionDecision: allow`, the tool runs and the agent
+   proceeds. **Request changes** → `permissionDecision: deny`, and your review is
+   handed back as the reason so the agent revises the plan.
+
+The plan hook **fails open**: if revgate can't find plan text, is interrupted, or
+errors, it allows the tool through rather than blocking the agent. (Copilot fails
+a `preToolUse` hook *closed* on a non-zero exit, so revgate always emits an
+explicit `allow` and exits 0.)
+
+The review UI, line comments, and approve / request-changes verdict are identical
+to diff review — each plan line is commentable, and your notes are quoted back to
+the agent.
+
+> Manual / non-Copilot use: `revgate --plan <file>` (or the `REVGATE_PLAN_FILE`
+> env var) reviews a markdown plan file directly and emits the `agentStop`-style
+> decision, handy for testing the plan UI outside a hook.
+
+### Install as a Copilot plugin
+
+The installer above already writes both hooks. If you instead want to distribute
+revgate as a Copilot CLI **plugin** (so users install it with `/plugin` rather
+than running the installer), this repo ships a plugin manifest:
+
+- `.github/plugin/marketplace.json` — the marketplace manifest
+- `copilot-plugin/plugin.json` + `copilot-plugin/hooks.json` — the plan-gate plugin
+
+```
+/plugin marketplace add <owner>/revgate
+/plugin install revgate-copilot@revgate
+```
+
+The plugin's hook calls `revgate copilot-plan`, so `revgate` must be on your PATH
+(e.g. `npm install -g` this repo, or `npm link`). The `install.ps1` path instead
+pins the absolute `node dist/index.js` command and needs nothing on PATH.
 
 ## Uninstall
 

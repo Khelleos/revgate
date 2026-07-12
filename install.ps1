@@ -95,6 +95,15 @@ function Write-Hook([string]$target, [string]$entry) {
 {
   "version": 1,
   "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "comment": "revgate: intercept exit_plan_mode and review the proposed plan before Copilot implements it. Approve -> the plan proceeds; request changes -> the agent revises. Other tools pass straight through. Timeout fails open.",
+        "bash": "node \"$entryFwd\" copilot-plan",
+        "powershell": "node \"$entryFwd\" copilot-plan",
+        "timeoutSec": $Timeout
+      }
+    ],
     "agentStop": [
       {
         "type": "command",
@@ -142,11 +151,15 @@ function Invoke-Install {
   Write-Host "  Runs:  node `"$entryFwd`""
   Write-Host ""
   Write-Host "Try it now (opens the review UI in your browser):"
-  Write-Host "  node `"$entryFwd`" --demo"
+  Write-Host "  node `"$entryFwd`" --demo            # diff review"
+  Write-Host "  node `"$entryFwd`" --demo --plan     # plan review"
   Write-Host ""
-  Write-Host "From now on, when your Copilot agent finishes a turn with changes,"
-  Write-Host "your browser opens a review. Approve -> the agent stops. Request changes"
-  Write-Host "or leave comments -> the agent gets your feedback as its next prompt."
+  Write-Host "Two gates are now active:"
+  Write-Host "  * Plan  (preToolUse) - when the agent leaves plan mode, review its plan"
+  Write-Host "                         before it writes code. Request changes -> it revises."
+  Write-Host "  * Diff  (agentStop)  - when the agent finishes a turn with changes, review"
+  Write-Host "                         them. Approve -> it stops; request changes -> it fixes."
+  Write-Host "In both, your comments become the agent's next prompt."
   Write-Host ""
   Write-Host "Uninstall:  .\install.ps1 -Uninstall"
 }

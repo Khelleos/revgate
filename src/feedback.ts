@@ -3,14 +3,18 @@ import type { DiffFile, HookDecision, ReviewSubmission } from "./types.js";
 /**
  * Turn a submitted review into the HookDecision that goes back to Copilot.
  *
- * - approve         -> allow  (Copilot stops; no further turn)
+ * - approve         -> allow  (diff: Copilot stops · plan: Copilot proceeds)
  * - request_changes -> block  (Copilot takes another turn on `reason`)
  */
-export function buildDecision(review: ReviewSubmission, files: DiffFile[]): HookDecision {
+export function buildDecision(
+  review: ReviewSubmission,
+  files: DiffFile[],
+  mode: "diff" | "plan" = "diff",
+): HookDecision {
   if (review.decision === "approve") {
     return { decision: "allow" };
   }
-  return { decision: "block", reason: renderPrompt(review, files) };
+  return { decision: "block", reason: renderPrompt(review, files, mode) };
 }
 
 /** The code lines a comment spans, in order, for quoting back to the agent. */
@@ -33,13 +37,21 @@ function rangeLines(
   return out;
 }
 
-function renderPrompt(review: ReviewSubmission, files: DiffFile[]): string {
+function renderPrompt(review: ReviewSubmission, files: DiffFile[], mode: "diff" | "plan"): string {
   const out: string[] = [];
-  out.push(
-    "A human reviewer looked at the changes you just made and left the review below.",
-    "Address every point, make the edits directly, and briefly note what you changed.",
-    "",
-  );
+  if (mode === "plan") {
+    out.push(
+      "A human reviewer looked at the plan you proposed and left the review below.",
+      "Revise the plan to address every point before you start implementing, then briefly note what you changed.",
+      "",
+    );
+  } else {
+    out.push(
+      "A human reviewer looked at the changes you just made and left the review below.",
+      "Address every point, make the edits directly, and briefly note what you changed.",
+      "",
+    );
+  }
 
   out.push("## Review verdict: REQUEST CHANGES", "");
 
@@ -48,7 +60,7 @@ function renderPrompt(review: ReviewSubmission, files: DiffFile[]): string {
   }
 
   if (review.comments.length) {
-    out.push("## Line comments");
+    out.push(mode === "plan" ? "## Plan comments" : "## Line comments");
     // Group by file for readability.
     const byFile = new Map<string, typeof review.comments>();
     for (const c of review.comments) {
