@@ -4,18 +4,9 @@
     "preToolUse": [
       {
         "type": "command",
-        "comment": "revgate: intercept exit_plan_mode and review the proposed plan before Copilot implements it. Other tools pass straight through. Timeout fails open.",
-        "bash": "node \"$HOME/path/to/revgate/dist/index.js\" copilot-plan",
-        "powershell": "node \"$env:USERPROFILE\\path\\to\\revgate\\dist\\index.js\" copilot-plan",
-        "timeoutSec": 3600
-      }
-    ],
-    "agentStop": [
-      {
-        "type": "command",
-        "comment": "revgate: open a GitHub-style review of the turn's changes and feed the result back to Copilot. Raise timeoutSec to however long you might spend reviewing.",
-        "bash": "node \"$HOME/path/to/revgate/dist/index.js\"",
-        "powershell": "node \"$env:USERPROFILE\\path\\to\\revgate\\dist\\index.js\"",
+        "comment": "revgate: intercept exit_plan_mode and review the proposed plan before Copilot implements it. Other tools pass straight through. This is revgate's ONLY automatic hook — diff review runs on demand via /revgate-review or `revgate review`. Timeout fails open, and so does a wrong path: preToolUse fails CLOSED on a non-zero exit, so without the guard a typo in the path below would deny EVERY tool call in every session. Replace both copies of the path when you edit this.",
+        "bash": "if [ -f \"$HOME/path/to/revgate/dist/index.js\" ]; then node \"$HOME/path/to/revgate/dist/index.js\" copilot-plan; else echo '{\"permissionDecision\":\"allow\"}'; fi",
+        "powershell": "if (Test-Path \"$env:USERPROFILE\\path\\to\\revgate\\dist\\index.js\") { node \"$env:USERPROFILE\\path\\to\\revgate\\dist\\index.js\" copilot-plan } else { '{\"permissionDecision\":\"allow\"}' }",
         "timeoutSec": 3600
       }
     ]

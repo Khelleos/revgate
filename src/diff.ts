@@ -1,12 +1,77 @@
+import { warn } from "./log.js";
 import type { DiffFile, DiffHunk, DiffLine } from "./types.js";
+
+/** The C escapes git emits in a quoted path, mapped to the byte they stand for. */
+const C_ESCAPES: Record<string, number> = {
+  a: 0x07, b: 0x08, f: 0x0c, n: 0x0a, r: 0x0d, t: 0x09, v: 0x0b, '"': 0x22, "\\": 0x5c,
+};
+
+/**
+ * Decode the body of a git-quoted path (the text between the double quotes).
+ *
+ * git wraps a path in `"` and C-escapes it whenever it contains a quote, a
+ * backslash, a control character — or, unless `core.quotePath=false`, any
+ * non-ASCII byte. The escapes are `\NNN` *octal bytes*, so they are collected
+ * into a byte buffer and decoded as UTF-8 in one go: a single `é` arrives as
+ * two separate escapes (`\303\251`) that mean nothing on their own.
+ *
+ * Exported for the tests; `parseUnifiedDiff` is the only production caller.
+ */
+export function unquoteGitPath(quoted: string): string {
+  const bytes: number[] = [];
+  for (let i = 0; i < quoted.length; i++) {
+    const ch = quoted[i];
+    if (ch !== "\\") {
+      // Re-encode: the escapes above are bytes, so everything must be bytes.
+      for (const b of Buffer.from(ch, "utf8")) bytes.push(b);
+      continue;
+    }
+    const next = quoted[++i];
+    if (next === undefined) break; // trailing backslash — nothing to escape
+    if (next >= "0" && next <= "7" && /^[0-7]{3}$/.test(quoted.slice(i, i + 3))) {
+      bytes.push(parseInt(quoted.slice(i, i + 3), 8));
+      i += 2;
+      continue;
+    }
+    const known = C_ESCAPES[next];
+    if (known !== undefined) bytes.push(known);
+    else for (const b of Buffer.from(next, "utf8")) bytes.push(b); // unknown: keep it
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+/** Undo git's path quoting if the token carries it; otherwise pass it through. */
+function unquoteIfQuoted(p: string): string {
+  return p.length >= 2 && p.startsWith('"') && p.endsWith('"')
+    ? unquoteGitPath(p.slice(1, -1))
+    : p;
+}
+
+/**
+ * True if any of a file's paths carries a line break.
+ *
+ * git permits control characters in a path and C-escapes them, so `unquoteGitPath`
+ * faithfully decodes `\n`/`\r` back into real bytes. Everything downstream of
+ * here is line-oriented — the annotation renderer writes `## <path>:<line>`, the
+ * feedback prompt `### <path>` — so such a path would splice phantom records
+ * into both: a review directive against a file nobody commented on. `git.ts`
+ * drops untracked files for exactly this reason; tracked ones arrive here.
+ */
+function hasLineBreakInPath(f: DiffFile): boolean {
+  return /[\r\n]/.test(f.path) || /[\r\n]/.test(f.oldPath) || /[\r\n]/.test(f.newPath);
+}
 
 /**
  * Minimal unified-diff parser tuned for `git diff` output. Zero dependencies
  * on purpose so the hook launches fast and installs cleanly. Handles new /
  * deleted / renamed / binary files and standard @@ hunks.
  */
-export function parseUnifiedDiff(text: string): DiffFile[] {
+export function parseUnifiedDiff(text: string, onDrop?: (file: DiffFile) => void): DiffFile[] {
   const lines = text.split("\n");
+  // A trailing newline leaves a final empty element. It is not a context line:
+  // accepting it as one appends a phantom row and advances the line counters, so
+  // the UI shows a blank line numbered one past the end of the file.
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
   const files: DiffFile[] = [];
   let current: DiffFile | null = null;
   let hunk: DiffHunk | null = null;
@@ -15,12 +80,27 @@ export function parseUnifiedDiff(text: string): DiffFile[] {
 
   const stripPrefix = (p: string): string => {
     if (p === "/dev/null") return p;
-    if (p.startsWith("a/") || p.startsWith("b/")) return p.slice(2);
-    return p;
+    // Unquote BEFORE stripping: git quotes the whole token including the
+    // `a/`/`b/` prefix (`"a/caf\303\251.txt"`), so a quoted path does not start
+    // with `a/` at all and would keep its prefix, its quotes and its escapes.
+    const s = unquoteIfQuoted(p);
+    if (s.startsWith("a/") || s.startsWith("b/")) return s.slice(2);
+    return s;
   };
 
   const pushFile = (): void => {
-    if (current) files.push(current);
+    if (!current) return;
+    if (hasLineBreakInPath(current)) {
+      warn(`skipping file whose name contains a newline: ${JSON.stringify(current.path)}`);
+      // Dropping it is right — see hasLineBreakInPath — but dropping it SILENTLY
+      // is not: if it was the only change, the review reports an empty diff, and
+      // an empty diff reads downstream as "nothing to review, approve". That is
+      // a clean bill of health for a file no reviewer saw. Hand it to the caller
+      // so the report can say so; stderr does not reach an `-o <file>` reader.
+      onDrop?.(current);
+      return;
+    }
+    files.push(current);
   };
 
   for (let i = 0; i < lines.length; i++) {
@@ -29,11 +109,17 @@ export function parseUnifiedDiff(text: string): DiffFile[] {
     if (line.startsWith("diff --git ")) {
       pushFile();
       hunk = null;
-      // "diff --git a/x b/x" — fall back to these paths until ---/+++ refine them.
-      const m = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
-      const guess = m ? m[2] : "";
+      // "diff --git a/x b/x" — fall back to these paths until ---/+++ refine
+      // them. Either side may be quoted (`"a/caf\303\251.txt"`); the
+      // backreference keeps the two quote states independent, since a rename
+      // can quote one path and not the other.
+      // A CR at the end of a CRLF-formatted diff belongs to the line ending, not
+      // to the path — and `.` matches it, so it would otherwise be captured into
+      // the guessed path and trip the line-break guard above.
+      const m = line.replace(/\r+$/, "").match(/^diff --git ("?)a\/(.+?)\1 ("?)b\/(.+)\3$/);
+      const guess = m ? (m[3] ? unquoteGitPath(m[4]) : m[4]) : "";
       current = {
-        oldPath: m ? m[1] : "",
+        oldPath: m ? (m[1] ? unquoteGitPath(m[2]) : m[2]) : "",
         newPath: guess,
         path: guess,
         isNew: false,
@@ -59,12 +145,13 @@ export function parseUnifiedDiff(text: string): DiffFile[] {
     }
     if (line.startsWith("rename from ")) {
       current.isRenamed = true;
-      current.oldPath = line.slice("rename from ".length).trim();
+      // Quoted the same way as the header paths, but with no `a/`/`b/` prefix.
+      current.oldPath = unquoteIfQuoted(line.slice("rename from ".length).trim());
       continue;
     }
     if (line.startsWith("rename to ")) {
       current.isRenamed = true;
-      current.newPath = line.slice("rename to ".length).trim();
+      current.newPath = unquoteIfQuoted(line.slice("rename to ".length).trim());
       current.path = current.newPath;
       continue;
     }
@@ -72,13 +159,23 @@ export function parseUnifiedDiff(text: string): DiffFile[] {
       current.isBinary = true;
       continue;
     }
-    if (line.startsWith("--- ")) {
+    // Both header branches are gated on being OUTSIDE a hunk. Inside a hunk body
+    // the tag character shifts the content right by one, so a deleted line whose
+    // text starts with `-- ` (a comment in SQL, Lua, Haskell; a signature marker
+    // in prose) arrives here as `--- …`, and an added `++ ` line as `+++ …`.
+    // Ungated, such a line is swallowed as a path header: it vanishes from the
+    // review, every later line on that side is renumbered off by one, and the
+    // `+++` case overwrites `path` — the identity key the staging allow-list and
+    // the annotation records are built from. git always emits `---`/`+++` before
+    // the file's first `@@`, and `hunk` is reset at each `diff --git`, so
+    // `hunk === null` admits exactly the real headers.
+    if (!hunk && line.startsWith("--- ")) {
       const p = stripPrefix(line.slice(4).trim());
       current.oldPath = p;
       if (p === "/dev/null") current.isNew = true;
       continue;
     }
-    if (line.startsWith("+++ ")) {
+    if (!hunk && line.startsWith("+++ ")) {
       const p = stripPrefix(line.slice(4).trim());
       current.newPath = p;
       if (p === "/dev/null") current.isDeleted = true;

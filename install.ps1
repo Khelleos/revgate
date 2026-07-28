@@ -1,19 +1,24 @@
 <#
-  revgate installer (Windows / PowerShell) — build revgate and wire it into
-  Copilot's agentStop hook.
+  revgate installer (Windows / PowerShell) — build revgate, install the
+  /revgate-review and /revgate-plan skills, and wire the one automatic hook:
+  the preToolUse plan gate. Everything else runs on demand.
 
-    .\install.ps1                    # interactive: asks how to enable revgate
-    .\install.ps1 -Global           # gate every repo you work in
-    .\install.ps1 -Repo <path>      # gate a single repository
-    .\install.ps1 -Uninstall        # remove the global hook
-    .\install.ps1 -Uninstall -Repo <path>
+    .\install.ps1                    # interactive: skills + plan hook (asks where)
+    .\install.ps1 -Global           # skills + plan hook for every repo you work in
+    .\install.ps1 -Repo <path>      # skills + plan hook for a single repository
+    .\install.ps1 -Skills           # only the skills — fully manual, no hook
+    .\install.ps1 -Uninstall        # remove the global hook AND the skills
+    .\install.ps1 -Uninstall -Repo <path>   # remove that repo's hook
+    .\install.ps1 -Uninstall -Skills        # remove only the skills
 #>
 [CmdletBinding()]
 param(
   [switch]$Global,
   [string]$Repo,
   [int]$Timeout = 3600,
+  [switch]$Skills,
   [switch]$Uninstall,
+  [switch]$SkipBuild,
   [switch]$Help
 )
 
@@ -21,24 +26,41 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Entry = Join-Path $ScriptDir "dist\index.js"
 $HookName = "revgate.json"
+$SkillSource = Join-Path $ScriptDir ".github\skills"
+$SkillTarget = Join-Path $env:USERPROFILE ".copilot\skills"
+
+# -Skills on its own scopes the run to skills; alongside -Global/-Repo it is
+# redundant (a hook install always includes the skills) but accepted.
+$SkillsOnly = ($Skills -and -not $Global -and -not $Repo)
 
 function Show-Usage {
   Write-Host @"
-revgate installer
+revgate installer — manual-first: installs the /revgate-review and /revgate-plan
+skills, plus one automatic exception, the preToolUse plan gate.
 
 Usage:
-  .\install.ps1 [-Global | -Repo <path>] [-Timeout <sec>]
-  .\install.ps1 -Uninstall [-Repo <path>]
+  .\install.ps1 [-Global | -Repo <path>] [-Timeout <sec>] [-SkipBuild]
+  .\install.ps1 -Skills
+  .\install.ps1 -Uninstall [-Repo <path>] [-Skills]
   .\install.ps1 -Help
 
 Options:
-  -Global          Gate every repository you work in (`$env:USERPROFILE\.copilot\hooks\$HookName).
-  -Repo <path>     Gate one repository (<path>\.github\hooks\$HookName).
-  -Timeout <sec>   Seconds revgate may wait for your review (default 3600).
-  -Uninstall       Remove the revgate hook (global, or -Repo <path>).
+  -Global          Enable the plan gate for every repository you work in
+                   (`$env:USERPROFILE\.copilot\hooks\$HookName). Skills included.
+  -Repo <path>     Enable the plan gate for one repository
+                   (<path>\.github\hooks\$HookName). Skills included.
+  -Timeout <sec>   Seconds revgate may wait for your plan review (default 3600).
+  -Skills          Install ONLY the skills into `$env:USERPROFILE\.copilot\skills\ —
+                   fully manual, no hook is written.
+  -SkipBuild       Wire the hook to the existing dist/ instead of running
+                   npm install + npm run build (CI, tests, repeat installs). The
+                   check that dist\index.js exists still applies.
+  -Uninstall       Remove the plan hook and the skills. With -Repo <path>, remove
+                   that repo's hook (add -Skills to remove the skills too); with
+                   -Skills alone, remove only the skills.
   -Help            Show this help.
 
-With no scope switch, the installer asks interactively.
+With no scope switch, the installer asks interactively where to put the plan gate.
 "@
 }
 
@@ -63,17 +85,30 @@ function Assert-Node {
 }
 
 function Invoke-Build {
-  Write-Host "Installing dependencies…"
-  Push-Location $ScriptDir
-  try {
-    & npm install --silent
-    Write-Host "Building…"
-    & npm run build --silent
-  } finally {
-    Pop-Location
+  if ($SkipBuild) {
+    Write-Host "Skipping npm install / build (-SkipBuild)."
+  } else {
+    Write-Host "Installing dependencies…"
+    Push-Location $ScriptDir
+    try {
+      # $ErrorActionPreference does not apply to native commands, so check
+      # $LASTEXITCODE by hand. Test-Path alone is not enough: a stale dist/ from
+      # an earlier build passes it, and we would then wire a preToolUse hook —
+      # which fails closed — to code that no longer compiles.
+      & npm install --silent
+      if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed (exit $LASTEXITCODE)"; exit 1 }
+      Write-Host "Building…"
+      & npm run build --silent
+      if ($LASTEXITCODE -ne 0) { Write-Error "npm run build failed (exit $LASTEXITCODE)"; exit 1 }
+    } finally {
+      Pop-Location
+    }
   }
+  # Outside the branch on purpose: -SkipBuild may skip the build, never this. A
+  # hook wired to a missing dist/index.js is a preToolUse hook that fails
+  # *closed*, denying every tool call.
   if (-not (Test-Path $Entry)) {
-    Write-Error "build did not produce $Entry"
+    Write-Error "no build at $Entry — run without -SkipBuild"
     exit 1
   }
 }
@@ -98,18 +133,9 @@ function Write-Hook([string]$target, [string]$entry) {
     "preToolUse": [
       {
         "type": "command",
-        "comment": "revgate: intercept exit_plan_mode and review the proposed plan before Copilot implements it. Approve -> the plan proceeds; request changes -> the agent revises. Other tools pass straight through. Timeout fails open.",
-        "bash": "node \"$entryFwd\" copilot-plan",
-        "powershell": "node \"$entryFwd\" copilot-plan",
-        "timeoutSec": $Timeout
-      }
-    ],
-    "agentStop": [
-      {
-        "type": "command",
-        "comment": "revgate: open a GitHub-style review of the turn's changes and feed your review back to Copilot. Raise timeoutSec to however long you might spend reviewing.",
-        "bash": "node \"$entryFwd\"",
-        "powershell": "node \"$entryFwd\"",
+        "comment": "revgate: intercept exit_plan_mode and review the proposed plan before Copilot implements it. Approve -> the plan proceeds; request changes -> the agent revises. Other tools pass straight through. This is revgate's ONLY automatic hook - diff review runs on demand via /revgate-review or 'revgate review'. Timeout fails open, and so does a missing build: preToolUse fails CLOSED on a non-zero exit, so if this clone is moved or dist/ is cleaned the unguarded command would deny EVERY tool call in every session until the JSON is hand-edited.",
+        "bash": "if [ -f \"$entryFwd\" ]; then node \"$entryFwd\" copilot-plan; else echo '{\"permissionDecision\":\"allow\"}'; fi",
+        "powershell": "if (Test-Path \"$entryFwd\") { node \"$entryFwd\" copilot-plan } else { '{\"permissionDecision\":\"allow\"}' }",
         "timeoutSec": $Timeout
       }
     ]
@@ -121,15 +147,85 @@ function Write-Hook([string]$target, [string]$entry) {
   [System.IO.File]::WriteAllText($target, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function Get-SkillNames {
+  if (-not (Test-Path $SkillSource)) {
+    Write-Error "no skills found at $SkillSource"
+    exit 1
+  }
+  return Get-ChildItem -Path $SkillSource -Directory |
+    Where-Object { Test-Path (Join-Path $_.FullName "SKILL.md") } |
+    ForEach-Object { $_.Name }
+}
+
+function Install-Skills {
+  $names = @(Get-SkillNames)
+  if ($names.Count -eq 0) {
+    Write-Error "no SKILL.md files found under $SkillSource"
+    exit 1
+  }
+  New-Item -ItemType Directory -Force -Path $SkillTarget | Out-Null
+  foreach ($name in $names) {
+    $dest = Join-Path $SkillTarget $name
+    if (Test-Path $dest) { Remove-Item -Path $dest -Recurse -Force }
+    Copy-Item -Path (Join-Path $SkillSource $name) -Destination $dest -Recurse -Force
+    Write-Host "OK  installed skill /$name"
+  }
+  Write-Host "  Skills: $SkillTarget"
+  # The skills shell out to `revgate`, so an install that leaves it off PATH
+  # produces skills that fail on first use with "command not found". Say so
+  # here rather than letting the user discover it inside Copilot.
+  if (Get-Command revgate -ErrorAction SilentlyContinue) {
+    Write-Host "  OK  ``revgate`` resolves on PATH."
+  } else {
+    Write-Warning "``revgate`` is not on PATH — the skills will fail until it is."
+    Write-Host "  Fix it from this clone with: npm install -g .   (or: npm link)"
+  }
+  Write-Host "  In Copilot CLI run /skills reload, then /revgate-review."
+}
+
+function Uninstall-Skills {
+  # Uninstall reads the INSTALLED skills, not the source tree: someone removing
+  # revgate may well have moved or deleted this checkout, and Get-SkillNames
+  # hard-errors when .github\skills is gone — which would leave the installed
+  # skills stranded with no way to remove them.
+  $names = @()
+  if (Test-Path $SkillTarget) {
+    $names = @(Get-ChildItem -Path $SkillTarget -Directory |
+      Where-Object { $_.Name -like "revgate-*" } |
+      ForEach-Object { $_.Name })
+  }
+  if ($names.Count -eq 0) {
+    Write-Host "no revgate skills installed under $SkillTarget"
+    return
+  }
+  foreach ($name in $names) {
+    $dest = Join-Path $SkillTarget $name
+    if (Test-Path $dest) {
+      Remove-Item -Path $dest -Recurse -Force
+      Write-Host "OK  removed $dest"
+    } else {
+      Write-Host "no skill installed at $dest"
+    }
+  }
+}
+
 function Invoke-Install {
+  if ($SkillsOnly) {
+    Install-Skills
+    Write-Host ""
+    Write-Host "No hook was installed - revgate is fully manual. Add the automatic plan"
+    Write-Host "gate with .\install.ps1 -Global (or -Repo <path>)."
+    return
+  }
+
   Assert-Node
   Invoke-Build
 
   $scope = if ($Global) { "global" } elseif ($Repo) { "repo" } else { "" }
   if (-not $scope) {
     Write-Host ""
-    Write-Host "How should revgate be enabled?"
-    Write-Host "  1) Globally - gate every repository you work in   (recommended)"
+    Write-Host "Where should the automatic plan gate be enabled?"
+    Write-Host "  1) Globally - every repository you work in   (recommended)"
     Write-Host "  2) One repository only"
     $choice = Read-Host "Choose [1/2] (1)"
     if ([string]::IsNullOrWhiteSpace($choice)) { $choice = "1" }
@@ -146,25 +242,32 @@ function Invoke-Install {
   Write-Hook $target $Entry
 
   Write-Host ""
+  Install-Skills
   Write-Host "OK  revgate installed."
   Write-Host "  Hook:  $target"
-  Write-Host "  Runs:  node `"$entryFwd`""
+  Write-Host "  Runs:  node `"$entryFwd`" copilot-plan"
   Write-Host ""
   Write-Host "Try it now (opens the review UI in your browser):"
-  Write-Host "  node `"$entryFwd`" --demo            # diff review"
-  Write-Host "  node `"$entryFwd`" --demo --plan     # plan review"
+  Write-Host "  node `"$entryFwd`" review --demo            # diff review"
+  Write-Host "  node `"$entryFwd`" review --demo --plan     # plan review"
   Write-Host ""
-  Write-Host "Two gates are now active:"
-  Write-Host "  * Plan  (preToolUse) - when the agent leaves plan mode, review its plan"
-  Write-Host "                         before it writes code. Request changes -> it revises."
-  Write-Host "  * Diff  (agentStop)  - when the agent finishes a turn with changes, review"
-  Write-Host "                         them. Approve -> it stops; request changes -> it fixes."
+  Write-Host "revgate is manual-first, with one automatic exception:"
+  Write-Host "  * On demand - /revgate-review and /revgate-plan in Copilot CLI, or"
+  Write-Host "                ``revgate review`` in a terminal, whenever you ask."
+  Write-Host "  * Automatic - Plan gate (preToolUse): when the agent leaves plan mode,"
+  Write-Host "                review its plan before it writes code. Request changes"
+  Write-Host "                -> it revises. Nothing else fires on its own."
   Write-Host "In both, your comments become the agent's next prompt."
   Write-Host ""
   Write-Host "Uninstall:  .\install.ps1 -Uninstall"
 }
 
 function Invoke-Uninstall {
+  if ($SkillsOnly) {
+    Uninstall-Skills
+    return
+  }
+
   $scope = if ($Repo) { "repo" } else { "global" }
   if ($scope -eq "repo") { Assert-Repo }
   $target = Get-HookTarget $scope
@@ -174,6 +277,10 @@ function Invoke-Uninstall {
   } else {
     Write-Host "no revgate hook found at $target"
   }
+  # A plain -Uninstall mirrors a plain install (hook + skills). A repo-scoped
+  # uninstall touches only that repo unless -Skills says otherwise: the skills
+  # are global, and another gated repo may still be using them.
+  if ($Skills -or $scope -eq "global") { Uninstall-Skills }
 }
 
 if ($Help) { Show-Usage; exit 0 }

@@ -1,14 +1,14 @@
 /**
- * The JSON payload Copilot CLI pipes to an `agentStop` hook on stdin.
- * Copilot emits either a camelCase form or a VS Code-compatible snake_case
- * form; we normalize both into this shape (see index.ts:readHookPayload).
+ * The JSON payload Copilot CLI pipes to a hook on stdin (for revgate, the
+ * `preToolUse` plan gate). Copilot emits either a camelCase form or a VS
+ * Code-compatible snake_case form; we normalize both into this shape (see
+ * index.ts:readHookPayload). `revgate review` builds a synthetic one, since
+ * the review pipeline is keyed on it.
  */
 export interface HookPayload {
   sessionId: string;
   timestamp: number | string;
   cwd: string;
-  transcriptPath?: string;
-  stopReason?: string;
   /**
    * The tool Copilot is about to run, on a `preToolUse` hook. We only gate the
    * plan tool (`exit_plan_mode`) and pass every other tool straight through.
@@ -23,19 +23,21 @@ export interface HookPayload {
 }
 
 /**
- * What the `agentStop` hook writes to stdout to steer Copilot's next move.
- * (The `preToolUse` plan hook uses PermissionDecision instead — see below.)
+ * A review's verdict in hook terms: "block" carries the reviewer's feedback as
+ * `reason`. Internal only — never written to stdout as-is. The plan hook
+ * translates it into a PermissionDecision (see below); `revgate review`
+ * renders it as annotations.
  */
 export interface HookDecision {
-  /** "block" forces another agent turn using `reason` as the prompt. */
+  /** "block" means changes were requested, with the feedback in `reason`. */
   decision: "block" | "allow";
   reason?: string;
 }
 
 /**
  * What a `preToolUse` hook writes to stdout to allow or veto the pending tool.
- * Copilot's contract differs from `agentStop`: "deny" blocks the tool and feeds
- * `permissionDecisionReason` back to the agent; "allow" lets it run.
+ * "deny" blocks the tool and feeds `permissionDecisionReason` back to the
+ * agent; "allow" lets it run.
  */
 export interface PermissionDecision {
   permissionDecision: "allow" | "deny" | "ask";
@@ -63,11 +65,13 @@ export interface DiffHunk {
 
 /**
  * Whether a file's changes are staged in git's index:
- * - "yes"     — fully staged (index matches the working tree)
- * - "partial" — some changes staged, some still only in the working tree
- * - "no"      — nothing staged (or untracked)
+ * - "yes"      — fully staged (index matches the working tree)
+ * - "partial"  — some changes staged, some still only in the working tree
+ * - "no"       — nothing staged (or untracked)
+ * - "unmerged" — a merge conflict: the index holds conflict stages, not a
+ *   staged/unstaged split, so the toggle does not apply (see git.ts).
  */
-export type StageState = "yes" | "partial" | "no";
+export type StageState = "yes" | "partial" | "no" | "unmerged";
 
 export interface DiffFile {
   oldPath: string;

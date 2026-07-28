@@ -1,15 +1,76 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { collectWorkingTreeDiff, getStageStates } from "./git.js";
+import { collectDiff, describeScope, filterFiles, getStageStates, ScopeError } from "./git.js";
 import { parseUnifiedDiff } from "./diff.js";
 import { buildDecision } from "./feedback.js";
+import { saveHistory } from "./history.js";
+import { reviewReport } from "./output.js";
 import { planToFiles, planTitle } from "./plan.js";
 import { findCopilotPlanContent } from "./copilot.js";
 import { startReviewServer, type ReviewContext } from "./server.js";
+import { parseArgs, helpText, type CliOptions } from "./cli.js";
 import { log, warn } from "./log.js";
-import type { HookDecision, HookPayload, PermissionDecision } from "./types.js";
+import type {
+  DiffFile,
+  HookDecision,
+  HookPayload,
+  PermissionDecision,
+  ReviewSubmission,
+} from "./types.js";
+
+/**
+ * Everything one review produced. The plan hook only ever looks at `decision`
+ * (its output contract is unchanged); the `review` command renders the rest
+ * as annotations.
+ */
+interface ReviewOutcome {
+  decision: HookDecision;
+  /** Null when no review was submitted — nothing to review, or interrupted. */
+  review: ReviewSubmission | null;
+  files: DiffFile[];
+  /** Human-readable scope label for the annotation header. */
+  scope?: string;
+  /** The branch reviewed, for the annotation header (diff mode only). */
+  branch?: string | null;
+  /** Why there is no review, when there isn't one. */
+  note?: string;
+  /**
+   * False only when the diff scope resolved outside a git repository. "Nothing
+   * to review" and "you are in the wrong directory" are the same *decision* for
+   * a hook (allow either way) but not the same *report*: `revgate review` must
+   * not answer an environment error with a verdict nobody gave. Absent for plan
+   * reviews, which do not need a repo.
+   */
+  isRepo?: boolean;
+  /**
+   * True only when a review was opened and then lost (server closed/errored
+   * before a submission) — never for "there was nothing to review". The hook
+   * paths treat both as "allow", but `revgate review` must not report a review
+   * that never happened as a human approval.
+   */
+  interrupted?: boolean;
+  /**
+   * How many changed files the `-I`/`-X` filters removed, when they removed all
+   * of them. A hook allows either way, but `revgate review` reports it as bad
+   * usage rather than an approval — see `renderNothingInScope`.
+   */
+  filteredOut?: number;
+  /**
+   * True when listing untracked files failed, so any new file is missing from the
+   * diff. A hook allows either way, but `revgate review` must not report an empty
+   * diff it could not fully collect as an approval — see `collectDiff`.
+   */
+  untrackedScanFailed?: boolean;
+  /**
+   * How many changed files the parser dropped because their path carries a line
+   * break. Same rule as `untrackedScanFailed`: a hook allows either way, but the
+   * report must not present a diff it knowingly omitted files from as a complete
+   * one — see `parseUnifiedDiff`.
+   */
+  droppedPaths?: number;
+}
 
 /** A stand-in plan for `--demo --plan`, so the plan UI is easy to try. */
 const SAMPLE_PLAN = `# Plan: add rate limiting to the public API
@@ -27,11 +88,6 @@ Stop a single client from exhausting the API by capping requests per minute.
 - Per-endpoint limits (a follow-up).
 - Billing / quota enforcement.
 `;
-
-/** Emit the `agentStop` hook result. This is the ONLY thing allowed on stdout. */
-function emit(decision: HookDecision): void {
-  process.stdout.write(JSON.stringify(decision) + "\n");
-}
 
 /** Emit a `preToolUse` permission decision (the plan hook's output contract). */
 function emitPermission(decision: PermissionDecision): void {
@@ -59,23 +115,26 @@ async function readHookPayload(): Promise<HookPayload | null> {
   const chunks: Buffer[] = [];
   const raw: string = await new Promise((resolve) => {
     let settled = false;
+    const onData = (c: Buffer) => chunks.push(c);
     const done = () => {
-      if (!settled) {
-        settled = true;
-        resolve(Buffer.concat(chunks).toString("utf8"));
-      }
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Detach and stop reading. Resolving alone is not enough: an attached
+      // `data` listener keeps stdin flowing and referenced, so a parent that
+      // never closes the pipe would keep this process alive forever — exactly
+      // the hang the timeout below exists to prevent.
+      process.stdin.off("data", onData);
+      process.stdin.off("end", done);
+      process.stdin.off("error", done);
+      process.stdin.pause();
+      resolve(Buffer.concat(chunks).toString("utf8"));
     };
     // Guard against a hung stdin that never closes.
-    const t = setTimeout(done, 2000);
-    process.stdin.on("data", (c) => chunks.push(c as Buffer));
-    process.stdin.on("end", () => {
-      clearTimeout(t);
-      done();
-    });
-    process.stdin.on("error", () => {
-      clearTimeout(t);
-      done();
-    });
+    const timer = setTimeout(done, 2000);
+    process.stdin.on("data", onData);
+    process.stdin.on("end", done);
+    process.stdin.on("error", done);
   });
 
   // Strip a leading UTF-8 BOM — some shells/pipes prepend one to stdin.
@@ -92,8 +151,11 @@ async function readHookPayload(): Promise<HookPayload | null> {
     let inlinePlan: string | undefined;
     const toolCalls = Array.isArray(o.toolCalls) ? (o.toolCalls as Record<string, unknown>[]) : null;
     if (toolCalls && toolCalls.length) {
-      const planCall = toolCalls.find((t) => t?.name === "exit_plan_mode") ?? toolCalls[0];
-      toolName = (planCall?.name as string | undefined) ?? toolName;
+      const planCall = toolCalls.find((t) => t?.name === "exit_plan_mode");
+      toolName = ((planCall ?? toolCalls[0])?.name as string | undefined) ?? toolName;
+      // Only the plan tool's arguments carry a plan. `summary` is a common
+      // argument name on unrelated tools, and harvesting it from whatever
+      // happened to be first would open a plan review over someone else's args.
       const args = parseToolArgs(planCall?.args);
       inlinePlan = (args?.plan ?? args?.summary) as string | undefined;
     }
@@ -108,8 +170,6 @@ async function readHookPayload(): Promise<HookPayload | null> {
       sessionId: String(o.sessionId ?? o.session_id ?? ""),
       timestamp: (o.timestamp as number | string) ?? Date.now(),
       cwd: String(o.cwd ?? process.cwd()),
-      transcriptPath: (o.transcriptPath ?? o.transcript_path) as string | undefined,
-      stopReason: (o.stopReason ?? o.stop_reason) as string | undefined,
       toolName,
       plan: typeof plan === "string" ? plan : undefined,
     };
@@ -121,134 +181,329 @@ async function readHookPayload(): Promise<HookPayload | null> {
 
 function openBrowser(url: string): void {
   const platform = process.platform;
-  try {
-    if (platform === "win32") {
+  const [command, args] =
+    platform === "win32"
       // `start` is a cmd builtin; the empty title arg avoids quoting pitfalls.
-      spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
-    } else if (platform === "darwin") {
-      spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
-    } else {
-      spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
-    }
+      ? ["cmd", ["/c", "start", "", url]]
+      : platform === "darwin"
+        ? ["open", [url]]
+        : ["xdg-open", [url]];
+  try {
+    const child = spawn(command as string, args as string[], { detached: true, stdio: "ignore" });
+    // A missing opener (xdg-open on a headless box) surfaces as an ASYNC `error`
+    // event, which the try/catch cannot see. Without a listener Node rethrows it
+    // as an uncaughtException and kills the process — and preToolUse fails CLOSED
+    // on a non-zero exit, so not opening a browser would deny every plan.
+    child.once("error", (err) => warn(`could not auto-open browser: ${err.message}`));
+    child.unref();
   } catch (err) {
     warn(`could not auto-open browser: ${(err as Error).message}`);
   }
 }
 
-/** Read a `--plan` / `--plan <path>` / `--plan=<path>` flag from argv. */
-function readPlanFlag(argv: string[]): { present: boolean; value?: string } {
-  const eq = argv.find((a) => a.startsWith("--plan="));
-  if (eq) return { present: true, value: eq.slice("--plan=".length) };
-  const i = argv.indexOf("--plan");
-  if (i === -1) return { present: false };
-  const next = argv[i + 1];
-  // A following token that isn't itself a flag is the plan file path.
-  return { present: true, value: next && !next.startsWith("-") ? next : undefined };
-}
-
 /**
- * Resolve the plan text to review, or null to fall back to diff mode.
- * Priority: hook payload > --plan <file> > $REVGATE_PLAN_FILE > demo sample.
+ * Resolve the plan text to review, or null when `--plan` was not asked for.
+ * Priority: --plan <file> > $REVGATE_PLAN_FILE > demo sample.
+ *
+ * Strict on purpose: the caller is `revgate review`, whose skill reads exit 0
+ * as "the plan is approved, start implementing" — so a typo'd path silently
+ * reviewing the working tree instead would forge a plan approval. A missing or
+ * empty plan is bad usage (exit 2), never a silent fallback. (The plan *hook*
+ * never reaches this: `runCopilotPlanHook` resolves its plan from the payload
+ * and Copilot's session state, and fails open instead.)
  */
-async function resolvePlan(
-  flag: { present: boolean; value?: string },
-  payload: HookPayload,
-  cwd: string,
-  isDemo: boolean,
-): Promise<string | null> {
-  if (payload.plan && payload.plan.trim()) return payload.plan;
-  if (!flag.present) return null;
+async function resolvePlan(options: CliOptions, cwd: string): Promise<string | null> {
+  if (!options.plan) return null;
 
-  const file = flag.value ?? process.env.REVGATE_PLAN_FILE;
+  // `||`, not `??`: an empty planFile is "no path was given", and falling back
+  // to the env var is exactly what bare `--plan` documents.
+  const file = options.planFile || process.env.REVGATE_PLAN_FILE;
   if (file) {
     try {
-      return await readFile(path.resolve(cwd, file), "utf8");
+      const text = await readFile(path.resolve(cwd, file), "utf8");
+      // An existing-but-empty file is not a plan. Returning "" would open a
+      // review of a blank document that the reviewer can only approve — a
+      // sign-off on nothing. Fall through to the no-plan-found handling below.
+      if (text.trim()) return text;
+      warn(`plan file ${file} is empty`);
     } catch (err) {
-      warn(`could not read plan file ${file}: ${(err as Error).message}`);
+      throw new ScopeError(`could not read plan file ${file}: ${(err as Error).message}`);
     }
   }
-  if (isDemo) return SAMPLE_PLAN;
+  if (options.demo) return SAMPLE_PLAN;
   // --plan was requested but no plan text was found: don't gate on an empty plan.
-  warn("plan mode requested but no plan text found — falling back to diff review");
-  return null;
+  throw new ScopeError(
+    "--plan was given but no plan text was found — pass a file, set $REVGATE_PLAN_FILE, or use --demo",
+  );
 }
 
 async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
+  const cli = parseArgs(process.argv.slice(2));
 
-  // `revgate copilot-plan` is Copilot's preToolUse plan gate — a distinct output
-  // contract (permissionDecision) from the agentStop diff review below.
-  if (argv[0] === "copilot-plan") {
-    await runCopilotPlanHook();
+  // `revgate copilot-plan` is Copilot's preToolUse plan gate — the one hook
+  // entry point, with its own output contract (permissionDecision).
+  if (cli.command === "copilot-plan") {
+    await runCopilotPlanHook(cli.options);
     return;
   }
 
-  const isDemo = argv.includes("--demo");
-  const planFlag = readPlanFlag(argv);
+  // A bad command line stays bad even with --help appended. Checking help first
+  // would exit 0 on `revgate review --bogus --help`, and an agent recovering
+  // from a usage error by adding --help would read that as success and loop.
+  // Print the usage it asked for, but keep the exit-2 contract.
+  if (cli.command === "review" && cli.error) {
+    warn(cli.error);
+    if (cli.options.help) process.stdout.write(helpText());
+    else warn("run `revgate review --help` for usage");
+    process.exitCode = 2;
+    return;
+  }
 
-  const payload =
-    (await readHookPayload()) ??
-    ({
-      sessionId: isDemo ? "demo" : "manual",
-      timestamp: Date.now(),
-      cwd: process.cwd(),
-      stopReason: "end_turn",
-    } satisfies HookPayload);
+  // A human asked for usage, so stdout is the right stream: no hook ever passes
+  // --help, and nothing else has been written to stdout at this point.
+  if (cli.options.help) {
+    process.stdout.write(helpText());
+    return;
+  }
 
+  try {
+    await runReviewCommand(cli.options);
+  } catch (err) {
+    // A ref that doesn't resolve is bad usage, not a crash.
+    if (!(err instanceof ScopeError)) throw err;
+    warn(err.message);
+    warn("run `revgate review --help` for usage");
+    process.exitCode = 2;
+  }
+}
+
+/**
+ * `revgate review` — the on-demand entry point the skill drives. This is NOT a
+ * hook: there is no payload on stdin, no hook JSON on stdout, and real exit
+ * codes are fair game.
+ */
+async function runReviewCommand(options: CliOptions): Promise<void> {
+  const cwd = process.cwd();
+  const payload: HookPayload = { sessionId: "cli", timestamp: Date.now(), cwd };
+
+  const planText = await resolvePlan(options, cwd);
+  const outcome = planText != null
+    ? await gatePlan(payload, planText, options)
+    : await reviewDiff(payload, options);
+
+  const meta = {
+    mode: planText != null ? ("plan" as const) : ("diff" as const),
+    scope: outcome.scope,
+    branch: outcome.branch,
+    note: outcome.note,
+  };
+
+  // Deliver the report the same way on every path: to --output when asked,
+  // otherwise to stdout — the only thing this path ever writes there, never
+  // hook JSON.
+  const deliver = async (text: string) => {
+    if (!options.output) {
+      process.stdout.write(text);
+      return;
+    }
+    const dest = path.resolve(cwd, options.output);
+    try {
+      await writeFile(dest, text, "utf8");
+      log(`annotations written to ${dest}`);
+    } catch (err) {
+      // The human has already reviewed. Letting this throw would lose their
+      // verdict entirely and surface as exit 1 — which both skills read as
+      // "no verdict was captured", the exact inversion of a review that did
+      // happen. stdout is the fallback the caller can still read.
+      warn(`could not write ${dest}: ${(err as Error).message}`);
+      warn("writing the annotations to stdout instead");
+      process.stdout.write(text);
+    }
+  };
+
+  const report = reviewReport(outcome, meta, options.exitCodeOnComments);
+  if (report.kind === "interrupted") {
+    warn("no verdict was captured — reporting an error rather than an approval");
+  } else if (report.kind === "not-a-repo") {
+    warn("not a git repository — nothing was reviewed");
+    warn("run `revgate review` from inside a repository");
+  } else if (report.kind === "scan-failed") {
+    warn("the untracked-file scan failed — reporting an error rather than an approval");
+  } else if (report.kind === "dropped-paths") {
+    warn("every changed file was dropped for a line break in its path — not an approval");
+  }
+  await deliver(report.text);
+  process.exitCode = report.exitCode;
+}
+
+/**
+ * Open the diff review UI and resolve to an outcome. Only the caller (`revgate
+ * review`) decides what reaches stdout. Never throws: an interrupted review
+ * resolves to "allow", which `reviewReport` renders as NO REVIEW CAPTURED.
+ */
+async function reviewDiff(payload: HookPayload, options: CliOptions): Promise<ReviewOutcome> {
   const cwd = payload.cwd || process.cwd();
+  log(`session ${payload.sessionId} — reviewing ${describeScope(options.scope)} in ${cwd}`);
 
-  const planText = await resolvePlan(planFlag, payload, cwd, isDemo);
-  if (planText != null) {
-    await reviewPlan(payload, planText);
-    return;
+  const repo = await collectDiff(cwd, options.scope);
+  // Seeded with the untracked files `collectDiff` refused to synthesize: both
+  // halves were dropped for the same reason (a line break in the path), so the
+  // report counts them together rather than accounting for one and losing the
+  // other to stderr.
+  let droppedPaths = repo.droppedUntracked ?? 0;
+  const changed = parseUnifiedDiff(repo.unified, () => {
+    droppedPaths++;
+  });
+  const files = filterFiles(changed, options.scope);
+
+  // An -I/-X pair that matches nothing would otherwise be indistinguishable from
+  // an empty scope below: both take the "nothing to review" branch. A mistyped or
+  // wrongly-anchored prefix must not turn a busy diff into a clean bill of health,
+  // so it is both said out loud here and carried on the outcome — stderr does not
+  // reach an agent reading only `-o <file>`, and `reviewReport` turns the count
+  // into a NOTHING IN SCOPE report and exit 2 instead of APPROVED and exit 0.
+  const filteredOut = changed.length > 0 && files.length === 0 ? changed.length : 0;
+  if (filteredOut) {
+    warn(
+      `every one of the ${changed.length} changed file(s) was removed by the path ` +
+        `filters — nothing is being reviewed in ${repo.scopeLabel}`,
+    );
+    warn("-I/--include and -X/--exclude prefixes are relative to the repository root");
   }
-
-  log(`session ${payload.sessionId} — reviewing changes in ${cwd}`);
-
-  const repo = await collectWorkingTreeDiff(cwd);
-  const files = parseUnifiedDiff(repo.unified);
 
   // No changes and not a demo: nothing to review, let Copilot proceed.
-  if (files.length === 0 && !isDemo) {
-    log(repo.isRepo ? "no changes to review — allowing" : "not a git repo — allowing");
-    emit({ decision: "allow" });
-    return;
+  if (files.length === 0 && !options.demo) {
+    const note = repo.isRepo
+      ? `No changes to review in ${repo.scopeLabel}.`
+      : "Not a git repository — no diff available.";
+    log(`${note} Allowing.`);
+    return {
+      decision: { decision: "allow" },
+      review: null,
+      files,
+      scope: repo.scopeLabel,
+      branch: repo.branch,
+      note,
+      isRepo: repo.isRepo,
+      filteredOut,
+      // Carried for the same reason as `filteredOut`: an empty diff whose
+      // untracked scan failed is not a clean tree, and stderr does not reach an
+      // agent reading only `-o <file>`.
+      untrackedScanFailed: repo.untrackedScanFailed,
+      // Same again: a diff left empty by dropping the only changed file is not
+      // an empty diff.
+      droppedPaths,
+    };
   }
 
   // Annotate each file with its staging state so the UI can offer a toggle.
-  if (repo.isRepo) {
+  // Only where staging is meaningful: in a ref/range scope the index has no
+  // bearing on what is being reviewed, so the toggle would lie — and acting on
+  // it would touch working-tree content that is not in the reviewed diff.
+  const scopeKind = options.scope.kind;
+  const canStage = repo.isRepo && (scopeKind === "worktree" || scopeKind === "staged");
+  if (canStage) {
     const states = await getStageStates(cwd);
     for (const f of files) f.staged = states[f.path] ?? "no";
   }
 
+  // A failed untracked scan does not stop the tracked diff from rendering, so
+  // this branch (unlike the empty one above) shows a review that looks complete
+  // while every new file is missing from it. The reviewer approves what they can
+  // see, and neither the page nor the annotation report said anything — only
+  // stderr did, which is exactly what a browser and an `-o <file>` reader don't
+  // read. Say it in both places instead.
+  const scanWarning = repo.untrackedScanFailed
+    ? "Listing untracked files failed — any new file in this scope is missing from this diff."
+    : undefined;
+  if (scanWarning) warn(scanWarning);
+
   const ctx: ReviewContext = {
-    payload,
+    // The resolved cwd, not the raw payload's: `payload.cwd` may be empty, and
+    // the stage routes run git in it. Handing over the raw value would let the
+    // diff and the staging action disagree about which directory they mean.
+    payload: { ...payload, cwd },
     branch: repo.branch,
     files,
     isRepo: repo.isRepo,
+    canStage,
     mode: "diff",
+    scope: repo.scopeLabel,
     note: repo.isRepo ? undefined : "Not a git repository — no diff available.",
+    warning: scanWarning,
   };
 
   const server = await startReviewServer(ctx);
   log(`review UI at ${server.url}`);
-  log(`${files.length} file(s) changed — opening browser…`);
-  openBrowser(server.url);
+  log(`${files.length} file(s) changed — ${options.open ? "opening browser…" : "open it to review"}`);
+  if (options.open) openBrowser(server.url);
 
   try {
-    const review = await server.waitForSubmission;
-    const decision = buildDecision(review, files, "diff");
-    server.close();
-    if (decision.decision === "block") {
-      log("changes requested — sending feedback to Copilot as next prompt");
-    } else {
-      log("approved — Copilot will stop");
+    // ONLY the await is inside the fail-open catch. "Interrupted" means no
+    // verdict arrived; once one has, a later throw (history, a broken stderr
+    // pipe) must not be reported as "no review captured" — that would turn a
+    // request-changes verdict into an approval, the exact inversion this
+    // handler is supposed to prevent.
+    let review: ReviewSubmission;
+    try {
+      review = await server.waitForSubmission;
+    } catch (err) {
+      // Server closed / interrupted before a review arrived: don't block Copilot.
+      const note = `No review was captured (${(err as Error).message}).`;
+      warn(`${note} Allowing.`);
+      return {
+        decision: { decision: "allow" },
+        review: null,
+        files,
+        scope: repo.scopeLabel,
+        branch: repo.branch,
+        note,
+        interrupted: true,
+        isRepo: repo.isRepo,
+        untrackedScanFailed: repo.untrackedScanFailed,
+      };
     }
-    emit(decision);
-  } catch (err) {
-    // Server closed / interrupted before a review arrived: don't block Copilot.
-    warn(`no review captured (${(err as Error).message}) — allowing`);
-    emit({ decision: "allow" });
+
+    const decision = buildDecision(review, files, "diff");
+    // Persist before returning: the annotations may be handed to an agent that
+    // ignores them, and the archive is what survives that.
+    await saveHistory(review, files, {
+      cwd,
+      sessionId: payload.sessionId,
+      scope: repo.scopeLabel,
+      branch: repo.branch,
+      mode: "diff",
+      // Carried for the same reason the returned outcome carries it: the archive
+      // is what gets re-read when the live report is lost, and a copy that drops
+      // this line reads as a complete review of the turn.
+      untrackedScanFailed: repo.untrackedScanFailed,
+      // Same again: the archive must not present a diff a changed file never
+      // reached as a review of every changed file.
+      droppedPaths,
+      enabled: options.history,
+      historyDir: options.historyDir,
+    });
+    log(
+      decision.decision === "block"
+        ? `changes requested (${review.comments.length} comment(s))`
+        : "approved",
+    );
+    return {
+      decision,
+      review,
+      files,
+      scope: repo.scopeLabel,
+      branch: repo.branch,
+      isRepo: repo.isRepo,
+      // Carried even alongside a real verdict: the verdict covers the files that
+      // made it into the diff, and the report has to say which ones didn't.
+      untrackedScanFailed: repo.untrackedScanFailed,
+      droppedPaths,
+    };
+  } finally {
+    // Always: a throw between the submission and the return would otherwise
+    // leave the listener open and hang the process instead of exiting.
+    server.close();
   }
 }
 
@@ -258,7 +513,12 @@ async function main(): Promise<void> {
  * the plan first). Never throws: an interrupted review resolves to "allow" so we
  * don't wedge the agent on our own failure.
  */
-async function gatePlan(payload: HookPayload, planText: string): Promise<HookDecision> {
+async function gatePlan(
+  payload: HookPayload,
+  planText: string,
+  options: CliOptions,
+): Promise<ReviewOutcome> {
+  const open = options.open;
   const files = planToFiles(planText);
   const ctx: ReviewContext = {
     payload,
@@ -271,28 +531,37 @@ async function gatePlan(payload: HookPayload, planText: string): Promise<HookDec
 
   log(`session ${payload.sessionId} — reviewing proposed plan`);
   const server = await startReviewServer(ctx);
-  log(`plan review UI at ${server.url} — opening browser…`);
-  openBrowser(server.url);
+  log(`plan review UI at ${server.url}${open ? " — opening browser…" : ""}`);
+  if (open) openBrowser(server.url);
 
   try {
-    const review = await server.waitForSubmission;
-    const decision = buildDecision(review, files, "plan");
-    server.close();
-    if (decision.decision === "block") {
-      log("plan changes requested — sending feedback to the agent as next prompt");
-    } else {
-      log("plan approved — the agent will proceed");
+    // Only the await is fail-open — see reviewDiff for why the rest must not be.
+    let review: ReviewSubmission;
+    try {
+      review = await server.waitForSubmission;
+    } catch (err) {
+      const note = `No plan review was captured (${(err as Error).message}).`;
+      warn(`${note} Allowing.`);
+      return { decision: { decision: "allow" }, review: null, files, note, interrupted: true };
     }
-    return decision;
-  } catch (err) {
-    warn(`no plan review captured (${(err as Error).message}) — allowing`);
-    return { decision: "allow" };
-  }
-}
 
-/** Review a proposed plan and emit an `agentStop`-style decision. */
-async function reviewPlan(payload: HookPayload, planText: string): Promise<void> {
-  emit(await gatePlan(payload, planText));
+    const decision = buildDecision(review, files, "plan");
+    await saveHistory(review, files, {
+      cwd: payload.cwd || process.cwd(),
+      sessionId: payload.sessionId,
+      scope: ctx.planTitle ? `plan: ${ctx.planTitle}` : "plan",
+      mode: "plan",
+      enabled: options.history,
+      historyDir: options.historyDir,
+    });
+    // Neutral wording on purpose: this path is shared between the plan hook
+    // (which hands the verdict to Copilot) and `revgate review --plan` (which
+    // hands nothing to any agent).
+    log(decision.decision === "block" ? "plan changes requested" : "plan approved");
+    return { decision, review, files };
+  } finally {
+    server.close();
+  }
 }
 
 /**
@@ -304,7 +573,7 @@ async function reviewPlan(payload: HookPayload, planText: string): Promise<void>
  * Fail open on every error path: a crash/non-zero exit would fail *closed* and
  * silently deny the tool, so we always emit an explicit "allow" and exit 0.
  */
-async function runCopilotPlanHook(): Promise<void> {
+async function runCopilotPlanHook(options: CliOptions): Promise<void> {
   const payload = (await readHookPayload()) ?? {
     sessionId: "",
     timestamp: Date.now(),
@@ -322,9 +591,17 @@ async function runCopilotPlanHook(): Promise<void> {
 
   // Prefer the full plan Copilot wrote to plan.md for THIS session; fall back to
   // the (condensed) plan carried inline in the exit_plan_mode tool arguments.
-  const planText =
-    findCopilotPlanContent(payload.sessionId) ??
-    (payload.plan && payload.plan.trim() ? payload.plan : null);
+  //
+  // With no session id there is no "this session" to key on, and
+  // findCopilotPlanContent would hand back the newest plan.md across *every*
+  // session — including one from another repository. The plan this very tool
+  // call carries is the one thing we know belongs to the turn being gated, so
+  // it wins there; the cross-session scan stays as a last resort for a payload
+  // that identifies neither.
+  const inlinePlan = payload.plan && payload.plan.trim() ? payload.plan : null;
+  const planText = payload.sessionId
+    ? findCopilotPlanContent(payload.sessionId) ?? inlinePlan
+    : inlinePlan ?? findCopilotPlanContent();
 
   if (!planText || !planText.trim()) {
     log("no plan text found for plan hook — allowing the tool to proceed");
@@ -332,7 +609,7 @@ async function runCopilotPlanHook(): Promise<void> {
     return;
   }
 
-  const decision = await gatePlan(payload, planText);
+  const { decision } = await gatePlan(payload, planText, options);
   if (decision.decision === "block") {
     emitPermission({
       permissionDecision: "deny",
@@ -345,13 +622,21 @@ async function runCopilotPlanHook(): Promise<void> {
 
 main().catch((err) => {
   warn(`fatal: ${(err as Error).stack ?? err}`);
-  // Never leave Copilot hanging on our failure. A non-zero exit fails *closed*
-  // for preToolUse (denies the tool), so we emit an explicit allow and exit 0.
-  // Each hook has its own output contract — pick the one matching this run.
-  if (process.argv[2] === "copilot-plan") {
-    emitPermission({ permissionDecision: "allow" });
-  } else {
-    emit({ decision: "allow" });
+  // Which contract this run owes stdout. Derived from parseArgs — the same
+  // routing main() used — rather than re-reading argv here, so the two cannot
+  // disagree about what a command line means.
+  const { command } = parseArgs(process.argv.slice(2));
+  // `review` is a plain CLI command, not a hook: report the failure honestly.
+  if (command === "review") {
+    process.exitCode = 1;
+    return;
   }
-  process.exit(0);
+  // The plan hook must never leave Copilot hanging on our failure. A non-zero
+  // exit fails *closed* for preToolUse (denies the tool), so we emit an
+  // explicit allow and exit 0. Set the code and let the event loop drain
+  // instead of calling process.exit: stdout to a pipe is asynchronous, and
+  // exiting here can truncate the very decision JSON this handler exists to
+  // deliver.
+  emitPermission({ permissionDecision: "allow" });
+  process.exitCode = 0;
 });
