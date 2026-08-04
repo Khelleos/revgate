@@ -16,20 +16,19 @@ export function groupCommentsByFile(comments: LineComment[]): Map<string, LineCo
 }
 
 /**
- * Turn a submitted review into the HookDecision that goes back to Copilot.
+ * Turn a submitted plan review into the HookDecision that goes back to Copilot.
  *
- * - approve         -> allow  (diff: Copilot stops · plan: Copilot proceeds)
- * - request_changes -> block  (Copilot takes another turn on `reason`)
+ * - approve         -> allow  (Copilot proceeds with the plan)
+ * - request_changes -> block  (Copilot revises the plan on `reason`)
+ *
+ * Plan-only since the agentStop diff gate was removed: a diff review's verdict
+ * reaches the agent as annotations (output.ts), never as a hook prompt.
  */
-export function buildDecision(
-  review: ReviewSubmission,
-  files: DiffFile[],
-  mode: "diff" | "plan" = "diff",
-): HookDecision {
+export function buildDecision(review: ReviewSubmission, files: DiffFile[]): HookDecision {
   if (review.decision === "approve") {
     return { decision: "allow" };
   }
-  return { decision: "block", reason: renderPrompt(review, files, mode) };
+  return { decision: "block", reason: renderPrompt(review, files) };
 }
 
 /** The code lines a comment spans, in order, for quoting back to the agent. */
@@ -60,21 +59,13 @@ function rangeLines(
   return out;
 }
 
-function renderPrompt(review: ReviewSubmission, files: DiffFile[], mode: "diff" | "plan"): string {
+function renderPrompt(review: ReviewSubmission, files: DiffFile[]): string {
   const out: string[] = [];
-  if (mode === "plan") {
-    out.push(
-      "A human reviewer looked at the plan you proposed and left the review below.",
-      "Revise the plan to address every point before you start implementing, then briefly note what you changed.",
-      "",
-    );
-  } else {
-    out.push(
-      "A human reviewer looked at the changes you just made and left the review below.",
-      "Address every point, make the edits directly, and briefly note what you changed.",
-      "",
-    );
-  }
+  out.push(
+    "A human reviewer looked at the plan you proposed and left the review below.",
+    "Revise the plan to address every point before you start implementing, then briefly note what you changed.",
+    "",
+  );
 
   out.push("## Review verdict: REQUEST CHANGES", "");
 
@@ -83,7 +74,7 @@ function renderPrompt(review: ReviewSubmission, files: DiffFile[], mode: "diff" 
   }
 
   if (review.comments.length) {
-    out.push(mode === "plan" ? "## Plan comments" : "## Line comments");
+    out.push("## Plan comments");
     // Group by file for readability.
     for (const [file, comments] of groupCommentsByFile(review.comments)) {
       out.push(`\n### ${file}`);

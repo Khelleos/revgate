@@ -69,16 +69,8 @@ test("buildDecision: approve allows with no reason", () => {
   assert.deepEqual(decision, { decision: "allow" });
 });
 
-test("buildDecision: approve allows in plan mode too", () => {
-  const decision = buildDecision(review({ decision: "approve" }), files, "plan");
-  assert.deepEqual(decision, { decision: "allow" });
-});
-
-/**
- * Snapshot of the exact block prompt. Task 4 refactors the file-grouping loop
- * out of renderPrompt — this must stay byte-identical through that change.
- */
-test("buildDecision: request_changes renders the full diff-mode prompt", () => {
+/** Snapshot of the exact block prompt the plan hook feeds back to the agent. */
+test("buildDecision: request_changes renders the full block prompt", () => {
   const decision = buildDecision(
     review({
       summary: "Looks risky.",
@@ -101,15 +93,15 @@ test("buildDecision: request_changes renders the full diff-mode prompt", () => {
   assert.equal(
     decision.reason,
     [
-      "A human reviewer looked at the changes you just made and left the review below.",
-      "Address every point, make the edits directly, and briefly note what you changed.",
+      "A human reviewer looked at the plan you proposed and left the review below.",
+      "Revise the plan to address every point before you start implementing, then briefly note what you changed.",
       "",
       "## Review verdict: REQUEST CHANGES",
       "",
       "## Overall feedback",
       "Looks risky.",
       "",
-      "## Line comments",
+      "## Plan comments",
       "",
       "### src/app.ts",
       "- **src/app.ts:2**  (`let x = 1;`)",
@@ -174,29 +166,13 @@ test("buildDecision: comment on an unknown file omits the code reference", () =>
   assert.match(reason, /^- \*\*missing\.ts:5\*\*$/m);
 });
 
-test("buildDecision: plan mode uses plan wording and headings", () => {
-  const decision = buildDecision(
-    review({
-      summary: "Too broad.",
-      comments: [{ file: "Plan", startLine: 3, endLine: 3, side: "new", body: "Split step 2." }],
-    }),
-    [],
-    "plan",
-  );
-  const reason = decision.reason ?? "";
-  assert.match(reason, /^A human reviewer looked at the plan you proposed/);
-  assert.match(reason, /Revise the plan to address every point before you start implementing/);
-  assert.match(reason, /^## Plan comments$/m);
-  assert.doesNotMatch(reason, /## Line comments/);
-});
-
 test("buildDecision: empty request_changes falls back to an ask-the-human prompt", () => {
   const decision = buildDecision(review(), files);
   assert.equal(
     decision.reason,
     [
-      "A human reviewer looked at the changes you just made and left the review below.",
-      "Address every point, make the edits directly, and briefly note what you changed.",
+      "A human reviewer looked at the plan you proposed and left the review below.",
+      "Revise the plan to address every point before you start implementing, then briefly note what you changed.",
       "",
       "## Review verdict: REQUEST CHANGES",
       "",

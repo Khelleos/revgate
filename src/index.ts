@@ -6,14 +6,13 @@ import { collectDiff, describeScope, filterFiles, getStageStates, ScopeError } f
 import { parseUnifiedDiff } from "./diff.js";
 import { buildDecision } from "./feedback.js";
 import { saveHistory } from "./history.js";
-import { reviewReport } from "./output.js";
+import { reviewReport, type ReviewOutcomeSummary } from "./output.js";
 import { planToFiles, planTitle } from "./plan.js";
 import { findCopilotPlanContent } from "./copilot.js";
 import { startReviewServer, type ReviewContext } from "./server.js";
 import { parseArgs, helpText, type CliOptions } from "./cli.js";
 import { log, warn } from "./log.js";
 import type {
-  DiffFile,
   HookDecision,
   HookPayload,
   PermissionDecision,
@@ -21,73 +20,18 @@ import type {
 } from "./types.js";
 
 /**
- * Everything one review produced. The plan hook only ever looks at `decision`
- * (its output contract is unchanged); the `review` command renders the rest
- * as annotations.
+ * Everything one review produced. The report fields live on
+ * `ReviewOutcomeSummary` (output.ts), the type `reviewReport` consumes, so the
+ * two cannot drift; this adds only what the hook paths need on top.
  */
-interface ReviewOutcome {
-  decision: HookDecision;
-  /** Null when no review was submitted — nothing to review, or interrupted. */
-  review: ReviewSubmission | null;
-  files: DiffFile[];
-  /** Human-readable scope label for the annotation header. */
-  scope?: string;
-  /** The branch reviewed, for the annotation header (diff mode only). */
-  branch?: string | null;
-  /** Why there is no review, when there isn't one. */
-  note?: string;
+interface ReviewOutcome extends ReviewOutcomeSummary {
   /**
-   * False only when the diff scope resolved outside a git repository. "Nothing
-   * to review" and "you are in the wrong directory" are the same *decision* for
-   * a hook (allow either way) but not the same *report*: `revgate review` must
-   * not answer an environment error with a verdict nobody gave. Absent for plan
-   * reviews, which do not need a repo.
+   * The hook verdict, set only by the plan path: `runCopilotPlanHook` turns it
+   * into preToolUse JSON. A diff review's verdict reaches the agent as
+   * annotations instead, so `reviewDiff` never builds one.
    */
-  isRepo?: boolean;
-  /**
-   * True only when a review was opened and then lost (server closed/errored
-   * before a submission) — never for "there was nothing to review". The hook
-   * paths treat both as "allow", but `revgate review` must not report a review
-   * that never happened as a human approval.
-   */
-  interrupted?: boolean;
-  /**
-   * How many changed files the `-I`/`-X` filters removed, when they removed all
-   * of them. A hook allows either way, but `revgate review` reports it as bad
-   * usage rather than an approval — see `renderNothingInScope`.
-   */
-  filteredOut?: number;
-  /**
-   * True when listing untracked files failed, so any new file is missing from the
-   * diff. A hook allows either way, but `revgate review` must not report an empty
-   * diff it could not fully collect as an approval — see `collectDiff`.
-   */
-  untrackedScanFailed?: boolean;
-  /**
-   * How many changed files the parser dropped because their path carries a line
-   * break. Same rule as `untrackedScanFailed`: a hook allows either way, but the
-   * report must not present a diff it knowingly omitted files from as a complete
-   * one — see `parseUnifiedDiff`.
-   */
-  droppedPaths?: number;
+  decision?: HookDecision;
 }
-
-/** A stand-in plan for `--demo --plan`, so the plan UI is easy to try. */
-const SAMPLE_PLAN = `# Plan: add rate limiting to the public API
-
-## Goal
-Stop a single client from exhausting the API by capping requests per minute.
-
-## Steps
-1. Add a token-bucket limiter keyed by API key (60 req/min, burst 10).
-2. Store buckets in the existing Redis instance; fall back to in-memory if Redis is down.
-3. Return HTTP 429 with a \`Retry-After\` header when the bucket is empty.
-4. Emit a \`ratelimit.rejected\` metric so we can watch for abuse.
-
-## Out of scope
-- Per-endpoint limits (a follow-up).
-- Billing / quota enforcement.
-`;
 
 /** Emit a `preToolUse` permission decision (the plan hook's output contract). */
 function emitPermission(decision: PermissionDecision): void {
@@ -203,7 +147,7 @@ function openBrowser(url: string): void {
 
 /**
  * Resolve the plan text to review, or null when `--plan` was not asked for.
- * Priority: --plan <file> > $REVGATE_PLAN_FILE > demo sample.
+ * Priority: --plan <file> > $REVGATE_PLAN_FILE.
  *
  * Strict on purpose: the caller is `revgate review`, whose skill reads exit 0
  * as "the plan is approved, start implementing" — so a typo'd path silently
@@ -230,10 +174,9 @@ async function resolvePlan(options: CliOptions, cwd: string): Promise<string | n
       throw new ScopeError(`could not read plan file ${file}: ${(err as Error).message}`);
     }
   }
-  if (options.demo) return SAMPLE_PLAN;
   // --plan was requested but no plan text was found: don't gate on an empty plan.
   throw new ScopeError(
-    "--plan was given but no plan text was found — pass a file, set $REVGATE_PLAN_FILE, or use --demo",
+    "--plan was given but no plan text was found — pass a file or set $REVGATE_PLAN_FILE",
   );
 }
 
@@ -291,13 +234,6 @@ async function runReviewCommand(options: CliOptions): Promise<void> {
     ? await gatePlan(payload, planText, options)
     : await reviewDiff(payload, options);
 
-  const meta = {
-    mode: planText != null ? ("plan" as const) : ("diff" as const),
-    scope: outcome.scope,
-    branch: outcome.branch,
-    note: outcome.note,
-  };
-
   // Deliver the report the same way on every path: to --output when asked,
   // otherwise to stdout — the only thing this path ever writes there, never
   // hook JSON.
@@ -321,7 +257,11 @@ async function runReviewCommand(options: CliOptions): Promise<void> {
     }
   };
 
-  const report = reviewReport(outcome, meta, options.exitCodeOnComments);
+  const report = reviewReport(
+    outcome,
+    planText != null ? "plan" : "diff",
+    options.exitCodeOnComments,
+  );
   if (report.kind === "interrupted") {
     warn("no verdict was captured — reporting an error rather than an approval");
   } else if (report.kind === "not-a-repo") {
@@ -371,14 +311,13 @@ async function reviewDiff(payload: HookPayload, options: CliOptions): Promise<Re
     warn("-I/--include and -X/--exclude prefixes are relative to the repository root");
   }
 
-  // No changes and not a demo: nothing to review, let Copilot proceed.
-  if (files.length === 0 && !options.demo) {
+  // No changes: nothing to review, let Copilot proceed.
+  if (files.length === 0) {
     const note = repo.isRepo
       ? `No changes to review in ${repo.scopeLabel}.`
       : "Not a git repository — no diff available.";
     log(`${note} Allowing.`);
     return {
-      decision: { decision: "allow" },
       review: null,
       files,
       scope: repo.scopeLabel,
@@ -452,7 +391,6 @@ async function reviewDiff(payload: HookPayload, options: CliOptions): Promise<Re
       const note = `No review was captured (${(err as Error).message}).`;
       warn(`${note} Allowing.`);
       return {
-        decision: { decision: "allow" },
         review: null,
         files,
         scope: repo.scopeLabel,
@@ -464,7 +402,6 @@ async function reviewDiff(payload: HookPayload, options: CliOptions): Promise<Re
       };
     }
 
-    const decision = buildDecision(review, files, "diff");
     // Persist before returning: the annotations may be handed to an agent that
     // ignores them, and the archive is what survives that.
     await saveHistory(review, files, {
@@ -484,12 +421,11 @@ async function reviewDiff(payload: HookPayload, options: CliOptions): Promise<Re
       historyDir: options.historyDir,
     });
     log(
-      decision.decision === "block"
+      review.decision === "request_changes"
         ? `changes requested (${review.comments.length} comment(s))`
         : "approved",
     );
     return {
-      decision,
       review,
       files,
       scope: repo.scopeLabel,
@@ -517,7 +453,7 @@ async function gatePlan(
   payload: HookPayload,
   planText: string,
   options: CliOptions,
-): Promise<ReviewOutcome> {
+): Promise<ReviewOutcome & { decision: HookDecision }> {
   const open = options.open;
   const files = planToFiles(planText);
   const ctx: ReviewContext = {
@@ -545,7 +481,7 @@ async function gatePlan(
       return { decision: { decision: "allow" }, review: null, files, note, interrupted: true };
     }
 
-    const decision = buildDecision(review, files, "plan");
+    const decision = buildDecision(review, files);
     await saveHistory(review, files, {
       cwd: payload.cwd || process.cwd(),
       sessionId: payload.sessionId,

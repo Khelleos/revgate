@@ -233,8 +233,15 @@ test("renderNoReview: reports the absence of a verdict, never an approval", () =
 
 test("reviewReport: an interrupted review is exit 1 and never an approval", () => {
   const report = reviewReport(
-    { review: null, files, interrupted: true, isRepo: true, note: "No review was captured (x)." },
-    { mode: "diff", scope: "main..feature" },
+    {
+      review: null,
+      files,
+      interrupted: true,
+      isRepo: true,
+      note: "No review was captured (x).",
+      scope: "main..feature",
+    },
+    "diff",
     false,
   );
   assert.equal(report.kind, "interrupted");
@@ -247,17 +254,13 @@ test("reviewReport: an interrupted review is exit 1 and never an approval", () =
 test("reviewReport: interrupted wins over every other signal", () => {
   // Ordering matters: an interrupted run outside a repo, or one carrying a stale
   // review object, must still report "no verdict" rather than a verdict.
-  const report = reviewReport(
-    { review: null, files: [], interrupted: true, isRepo: false },
-    {},
-    true,
-  );
+  const report = reviewReport({ review: null, files: [], interrupted: true, isRepo: false }, "diff", true);
   assert.equal(report.kind, "interrupted");
   assert.equal(report.exitCode, 1);
 });
 
 test("reviewReport: outside a repository with no verdict is exit 2, not an approval", () => {
-  const report = reviewReport({ review: null, files: [], isRepo: false }, { mode: "diff" }, false);
+  const report = reviewReport({ review: null, files: [], isRepo: false }, "diff", false);
   assert.equal(report.kind, "not-a-repo");
   assert.equal(report.exitCode, 2, "a wrong directory is bad usage, not an approval");
   assert.match(report.text, /^# revgate review: NO REVIEW CAPTURED$/m);
@@ -265,12 +268,12 @@ test("reviewReport: outside a repository with no verdict is exit 2, not an appro
 });
 
 test("reviewReport: outside a repository WITH a verdict reports the verdict", () => {
-  // --demo opens the UI outside a repo, so a human can reach submit on a run
-  // carrying isRepo: false. Discarding what they typed is the same
+  // A plan review opens the UI outside a repo, so a human can reach submit on a
+  // run carrying isRepo: false. Discarding what they typed is the same
   // "report disagrees with the reviewer" failure, inverted.
   const report = reviewReport(
     { review: review({ summary: "Please fix." }), files: [], isRepo: false },
-    {},
+    "plan",
     false,
   );
   assert.equal(report.kind, "verdict");
@@ -282,8 +285,14 @@ test("reviewReport: outside a repository WITH a verdict reports the verdict", ()
 
 test("reviewReport: nothing to review is a real approval at exit 0", () => {
   const report = reviewReport(
-    { review: null, files: [], isRepo: true, note: "No changes to review in main..feature." },
-    { mode: "diff", scope: "main..feature" },
+    {
+      review: null,
+      files: [],
+      isRepo: true,
+      note: "No changes to review in main..feature.",
+      scope: "main..feature",
+    },
+    "diff",
     true,
   );
   assert.equal(report.kind, "verdict");
@@ -294,17 +303,24 @@ test("reviewReport: nothing to review is a real approval at exit 0", () => {
 
 test("reviewReport: a captured verdict honours --exit-code-on-comments", () => {
   const captured = { review: review({ comments: [comment()] }), files, isRepo: true };
-  assert.equal(reviewReport(captured, {}, true).exitCode, 10);
-  assert.equal(reviewReport(captured, {}, false).exitCode, 0);
-  assert.equal(reviewReport(captured, {}, true).kind, "verdict");
+  assert.equal(reviewReport(captured, "diff", true).exitCode, 10);
+  assert.equal(reviewReport(captured, "diff", false).exitCode, 0);
+  assert.equal(reviewReport(captured, "diff", true).kind, "verdict");
 });
 
 test("reviewReport: filters that removed every file are exit 2, not an approval", () => {
   // The dangerous inversion this branch exists for: a busy diff, an -I/-X pair
   // that hid all of it, and a report the agent reads as a clean bill of health.
   const report = reviewReport(
-    { review: null, files: [], isRepo: true, filteredOut: 3, note: "No changes to review." },
-    { mode: "diff", scope: "working tree vs HEAD [+no-such-dir]" },
+    {
+      review: null,
+      files: [],
+      isRepo: true,
+      filteredOut: 3,
+      note: "No changes to review.",
+      scope: "working tree vs HEAD [+no-such-dir]",
+    },
+    "diff",
     true,
   );
   assert.equal(report.kind, "filtered-out");
@@ -319,11 +335,11 @@ test("reviewReport: filters that removed every file are exit 2, not an approval"
 });
 
 test("reviewReport: a verdict beats filteredOut", () => {
-  // --demo opens the UI on an empty file list, so a human can submit on a run
-  // that also filtered everything out. What they typed wins, as with isRepo.
+  // A plan review opens the UI on an empty file list, so a human can submit on
+  // a run that also filtered everything out. What they typed wins, as with isRepo.
   const report = reviewReport(
     { review: review({ summary: "Looks fine." }), files: [], isRepo: true, filteredOut: 2 },
-    {},
+    "diff",
     false,
   );
   assert.equal(report.kind, "verdict");
@@ -334,7 +350,7 @@ test("reviewReport: a verdict beats filteredOut", () => {
 test("reviewReport: an empty diff with no filters stays an approval", () => {
   // filteredOut: 0 must not be read as "filters emptied it" — a clean tree is a
   // real "approve, nothing to act on".
-  const report = reviewReport({ review: null, files: [], isRepo: true, filteredOut: 0 }, {}, false);
+  const report = reviewReport({ review: null, files: [], isRepo: true, filteredOut: 0 }, "diff", false);
   assert.equal(report.kind, "verdict");
   assert.equal(report.exitCode, 0);
   assert.match(report.text, /^# revgate review: APPROVED$/m);
@@ -346,8 +362,15 @@ test("reviewReport: a failed untracked scan over an empty diff is exit 2, not an
   // new files then looks exactly like a clean tree. APPROVED/0 there is a sign-off
   // on code nobody was shown.
   const report = reviewReport(
-    { review: null, files: [], isRepo: true, untrackedScanFailed: true, note: "No changes to review." },
-    { mode: "diff", scope: "working tree vs HEAD" },
+    {
+      review: null,
+      files: [],
+      isRepo: true,
+      untrackedScanFailed: true,
+      note: "No changes to review.",
+      scope: "working tree vs HEAD",
+    },
+    "diff",
     true,
   );
   assert.equal(report.kind, "scan-failed");
@@ -364,7 +387,7 @@ test("reviewReport: a verdict beats a failed untracked scan", () => {
   // and submitted still gets their decision reported, not overridden.
   const report = reviewReport(
     { review: review({ summary: "Fine." }), files, isRepo: true, untrackedScanFailed: true },
-    {},
+    "diff",
     false,
   );
   assert.equal(report.kind, "verdict");
@@ -397,8 +420,15 @@ test("reviewReport: a diff emptied by dropped paths is not an approval", () => {
   // list is empty — and an empty file list otherwise reads as "nothing to
   // review, approve", a clean bill of health for code nobody saw.
   const report = reviewReport(
-    { review: null, files: [], isRepo: true, droppedPaths: 1, note: "No changes to review." },
-    { mode: "diff", scope: "working tree vs HEAD" },
+    {
+      review: null,
+      files: [],
+      isRepo: true,
+      droppedPaths: 1,
+      note: "No changes to review.",
+      scope: "working tree vs HEAD",
+    },
+    "diff",
     true,
   );
   assert.equal(report.kind, "dropped-paths");
@@ -414,7 +444,7 @@ test("reviewReport: a dropped path alongside reviewed files is a header line, no
   // say it does not cover everything that changed.
   const report = reviewReport(
     { review: review({ summary: "Fine." }), files, isRepo: true, droppedPaths: 1 },
-    {},
+    "diff",
     false,
   );
   assert.equal(report.kind, "verdict");
@@ -423,7 +453,7 @@ test("reviewReport: a dropped path alongside reviewed files is a header line, no
 });
 
 test("reviewReport: no dropped-paths line when nothing was dropped", () => {
-  const report = reviewReport({ review: review({ summary: "Fine." }), files, isRepo: true }, {}, false);
+  const report = reviewReport({ review: review({ summary: "Fine." }), files, isRepo: true }, "diff", false);
   assert.doesNotMatch(report.text, /dropped-paths/);
 });
 

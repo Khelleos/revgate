@@ -20,7 +20,7 @@ Both ways share the same UI, the same review pipeline, and the same history.
 | Scope | Any refs, range, `--staged`, path filters — or a plan file | The proposed plan |
 | Output | Markdown annotations on stdout (or `--output <file>`) | Permission decision JSON on stdout |
 | Signal | Exit code `10` when comments were captured | `deny` / `allow` |
-| Install | `.\install.ps1 -Skills`, or the Copilot plugin | `.\install.ps1` (installs the skills too) |
+| Install | `.\install.ps1` | the same `.\install.ps1` run wires it |
 
 The skill is the "review what you just did, scoped to `src/`" tool — the agent
 runs it at a moment of its (or your) choosing, reads structured markdown back,
@@ -49,9 +49,10 @@ it was removed in 0.2.0 in favour of reviewing on demand.
 
 ## Install
 
-Clone, then run the installer in PowerShell. It builds revgate, installs the
-`/revgate-review` and `/revgate-plan` skills, and wires the one automatic hook
-(the plan gate) for you — no hand-editing paths.
+Clone, then run the installer in PowerShell. It builds revgate, puts the
+`revgate` CLI on your PATH, installs the `/revgate-review` and `/revgate-plan`
+skills, and wires the one automatic hook (the plan gate) for you — no
+hand-editing paths, no separate npm commands.
 
 ```powershell
 git clone <repo-url> revgate
@@ -59,29 +60,21 @@ cd revgate
 .\install.ps1
 ```
 
-The installer asks where to enable the plan gate:
-
-- **Globally** (recommended) — every repository you work in, via
-  `%USERPROFILE%\.copilot\hooks\revgate.json`.
-- **One repository** — a single repo, via its `.github\hooks\revgate.json`.
-
-Non-interactive / scripted:
+There is one install route and no prompt: every run installs the CLI, both
+skills, and the global plan gate at `%USERPROFILE%\.copilot\hooks\revgate.json`,
+so the gate covers every repository you work in.
 
 ```powershell
-.\install.ps1 -Global
-.\install.ps1 -Repo C:\path\to\project
 .\install.ps1 -Timeout 1800        # plan review timeout in seconds (default 3600)
-.\install.ps1 -Skills              # only the skills — fully manual, no hook at all
 .\install.ps1 -Help                # every installer switch
 ```
 
 Every install copies `.github\skills\*` into `%USERPROFILE%\.copilot\skills\`,
 which is what makes `/revgate-review` and `/revgate-plan` available in Copilot
-CLI; `-Skills` on its own installs *only* those and writes no hook. Run
-`/skills reload` afterwards. The skills call the `revgate` bin, so it must be on
-your PATH (`npm install -g .` from this clone, or `npm link` — both build
-automatically via the `prepare` script); the plan hook pins the absolute
-`node dist/index.js` path and needs nothing on PATH.
+CLI. Run `/skills reload` afterwards. The skills call the `revgate` bin, so
+every install also runs `npm install -g .` from this clone to put it on your
+PATH; the plan hook pins the absolute `node dist/index.js` path and needs
+nothing on PATH.
 
 > If PowerShell blocks the script, either unblock it once with
 > `Unblock-File .\install.ps1`, or run it in a single session with
@@ -94,8 +87,7 @@ set does not reach an existing install until you re-run it:
 
 ```powershell
 git pull
-.\install.ps1 -Global            # rewrites the hook file, rebuilds dist/, refreshes the skills
-npm install -g .                 # only if you use the skills or the plugin
+.\install.ps1                    # rewrites the hook file, rebuilds dist/ and the global CLI, refreshes the skills
 ```
 
 **Upgrading from 0.1.x:** the `agentStop` diff gate was removed. Re-running the
@@ -105,41 +97,19 @@ exits 2 with a message pointing back here rather than opening a review. Check
 what you currently have with
 `Get-Content $env:USERPROFILE\.copilot\hooks\revgate.json` — it should list
 `preToolUse` and nothing else. Add `-SkipBuild` to rewire an existing `dist/`
-without re-running `npm install` and `tsc`.
-
-### Install as a Copilot plugin
-
-If you'd rather distribute revgate through `/plugin` than run the installer,
-this repo ships a marketplace and plugin manifest:
-
-- `.github/plugin/marketplace.json` — the marketplace manifest
-- `copilot-plugin/plugin.json` + `copilot-plugin/hooks.json` — the plan hook
-- `copilot-plugin/skills/` — the packaged `/revgate-review` and `/revgate-plan`
-  skills (generated from `.github/skills/` by `npm run sync:skills`)
-
-```
-/plugin marketplace add <owner>/revgate
-/plugin install revgate-copilot@revgate
-```
-
-The plugin's hook and skills both invoke `revgate` from PATH, so install it
-globally first (`npm install -g .`, or `npm link`). The hook probes for the bin
-before running it and emits a plain `allow` when it is missing — `preToolUse`
-fails **closed**, so an unguarded 127 would deny every tool call in every
-session. The consequence is that a plugin installed without the bin gates
-nothing, silently, rather than erroring: check `revgate review --help` runs
-before you rely on it.
+without re-running any npm step — dependency install, `tsc`, and the global CLI
+install are all skipped.
 
 ## Verify
 
 ```powershell
 node dist\index.js review --help              # every flag
-node dist\index.js review --demo              # diff review against your working tree
-node dist\index.js review --demo --plan       # plan review, using a bundled sample plan
+node dist\index.js review                     # diff review against your working tree
 ```
 
 This opens the review UI directly so you can confirm it works before relying on
-the hook. Add `--no-open` if you'd rather open the printed URL yourself.
+the hook — with a completely clean tree there is nothing to review, so touch a
+file first. Add `--no-open` if you'd rather open the printed URL yourself.
 
 ## `revgate review`
 
@@ -200,10 +170,9 @@ Resolve it in git first.
 | `--history-dir <dir>` | Save reviews under `<dir>` (beats `$REVGATE_HISTORY_DIR`) |
 | `--no-history` | Don't archive this review |
 | `--no-open` | Don't auto-open the browser |
-| `--demo` | Open the UI even when there is nothing to review (with `--plan`, review a bundled sample plan) |
 | `-h`, `--help` | Show usage |
 
-`--staged`, `--demo`, `--no-open`, `--no-history`, `--exit-code-on-comments` and
+`--staged`, `--no-open`, `--no-history`, `--exit-code-on-comments` and
 `-h` are switches with no value: `--no-history=false` is a usage error (exit 2),
 not "keep the history". Omit the flag to get the default. Accepting and
 discarding the value would invert the caller's intent in silence, and the primary
@@ -414,15 +383,13 @@ session state, as described above.
 ## Uninstall
 
 ```powershell
-.\install.ps1 -Uninstall                       # global hook AND the skills — mirrors a plain install
-.\install.ps1 -Uninstall -Repo <path>          # a single repository's hook, skills untouched
-.\install.ps1 -Uninstall -Skills               # just the skills
-.\install.ps1 -Uninstall -Repo <path> -Skills  # that repo's hook AND the skills
+.\install.ps1 -Uninstall           # removes the global hook AND the skills
 ```
 
-A plain `-Uninstall` removes what a plain install wrote: the global hook and the
-skills. A repo-scoped uninstall leaves the (global) skills alone unless you add
-`-Skills`, since another gated repository may still be using them.
+`-Uninstall` removes what the install wrote: the global hook and the skills.
+Running it twice is a no-op. The globally installed CLI is npm's to manage and
+is left in place — remove it with `npm uninstall -g revgate` (the uninstaller
+reminds you).
 
 ## Develop
 
@@ -430,23 +397,21 @@ skills. A repo-scoped uninstall leaves the (global) skills alone unless you add
 npm install            # also builds, via the `prepare` script — a type error fails the install
 npm run build          # compile TypeScript to dist/
 npm test               # node:test suite via tsx (needs Node >= 21 — see below)
-npm run demo           # run the UI against your working tree without building
-npm run demo:plan      # run the plan UI against the bundled sample plan
-npm run sync:skills    # regenerate copilot-plugin/skills/ from .github/skills/
-npm run sync:skills -- --check   # fail if the packaged copies are stale
+npm run dev -- review  # run the UI against your working tree without building
 ```
 
 revgate itself runs on Node ≥ 18, but `npm test` needs **Node ≥ 21**: the test
 script passes a glob to `node --test`, and expanding one is a feature of the
 runner rather than of the shell. Everything else in this list works on 18.
 
-`.github/skills/` is the single source of truth for both skills;
-`copilot-plugin/skills/` is a generated copy, and `test/plugin.test.ts` fails if
-the two drift. `hooks/revgate.json` is a reference template — the installer
-generates a copy with the correct absolute path to this clone's `dist/index.js`.
-That generated copy is never committed: `install.ps1 -Repo .` writes it to
-`.github/hooks/revgate.json`, which is gitignored because it pins one machine's
-path. Both the template and the generated copy wrap the `preToolUse` command in
+`.github/skills/` is the only skill tree — the installer copies it verbatim
+into `%USERPROFILE%\.copilot\skills\`. `hooks/revgate.json` is a reference
+template — the installer generates a copy with the correct absolute path to this
+clone's `dist/index.js` and writes it only to the global
+`%USERPROFILE%\.copilot\hooks\`. The installer no longer writes
+`.github/hooks/`, but the directory stays gitignored: a hand-copied template
+there would pin one machine's path, and committing it would hand every other
+clone a hook that cannot run. Both the template and the generated copy wrap the `preToolUse` command in
 an existence check on `dist/index.js`, because that hook fails **closed**: a
 clone that moved, a cleaned `dist/`, or a mistyped path would otherwise deny
 every tool call in every session until someone found and hand-edited the JSON.

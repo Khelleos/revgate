@@ -40,7 +40,11 @@ export interface HookDecision {
  * agent; "allow" lets it run.
  */
 export interface PermissionDecision {
-  permissionDecision: "allow" | "deny" | "ask";
+  /**
+   * Copilot's contract also accepts "ask", but revgate never emits it: the
+   * gate either allows the tool or blocks it with the reviewer's feedback.
+   */
+  permissionDecision: "allow" | "deny";
   permissionDecisionReason?: string;
 }
 

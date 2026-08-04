@@ -8,11 +8,8 @@ import { commandLines, toArgv } from "./helpers/docs.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Skill trees to validate. Task 7 adds the packaged copies under copilot-plugin. */
-const SKILL_ROOTS = [
-  path.join(repoRoot, ".github", "skills"),
-  path.join(repoRoot, "copilot-plugin", "skills"),
-];
+/** Skill trees to validate. `.github/skills/` is the only one: install.ps1 copies it verbatim. */
+const SKILL_ROOTS = [path.join(repoRoot, ".github", "skills")];
 
 interface Skill {
   /** Directory name, e.g. `revgate-review`. */
@@ -62,8 +59,8 @@ async function loadSkills(): Promise<Skill[]> {
         .filter((e) => e.isDirectory())
         .map((e) => e.name);
     } catch (err) {
-      // Both roots ship now. Skipping a missing one would silently retire every
-      // assertion below it — a deleted skill tree would read as a green suite.
+      // Skipping a missing root would silently retire every assertion below
+      // it — a deleted skill tree would read as a green suite.
       assert.fail(
         `${path.relative(repoRoot, root)}: skill root is missing — ${(err as Error).message}`,
       );

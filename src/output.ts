@@ -209,6 +209,10 @@ export interface ReviewOutcomeSummary {
   /** Null when no review was submitted — nothing to review, or interrupted. */
   review: ReviewSubmission | null;
   files: DiffFile[];
+  /** Human-readable scope label for the annotation header. */
+  scope?: string;
+  /** The branch reviewed, for the annotation header (diff mode only). */
+  branch?: string | null;
   /** True only when a review was opened and then lost before a submission. */
   interrupted?: boolean;
   /** False only when the diff scope resolved outside a git repository. */
@@ -250,8 +254,8 @@ export interface ReviewOutcomeSummary {
  *   on our own failure is the worse trade there.
  * - Running outside a repository is an environment error, not "nothing to
  *   review": exit 2 so the agent fixes the invocation rather than reading an
- *   approval. Only when no verdict exists, though — `--demo` opens the UI outside
- *   a repo too, and discarding a verdict a human just typed is the same
+ *   approval. Only when no verdict exists, though — a plan review opens the UI
+ *   outside a repo too, and discarding a verdict a human just typed is the same
  *   "the report disagrees with the reviewer" failure, inverted.
  * - Filters that removed every changed file are bad usage, not "nothing to
  *   review": exit 2, so the caller fixes its prefixes instead of banking an
@@ -263,9 +267,19 @@ export interface ReviewOutcomeSummary {
  */
 export function reviewReport(
   outcome: ReviewOutcomeSummary,
-  meta: AnnotationMeta,
+  mode: "diff" | "plan",
   exitCodeOnComments: boolean,
 ): ReviewReport {
+  // Every header fact the report needs lives on the outcome, so no caller can
+  // hand this function two disagreeing copies of the same review.
+  const meta: AnnotationMeta = {
+    mode,
+    scope: outcome.scope,
+    branch: outcome.branch,
+    note: outcome.note,
+    untrackedScanFailed: outcome.untrackedScanFailed,
+    droppedPaths: outcome.droppedPaths,
+  };
   if (outcome.interrupted) {
     return {
       kind: "interrupted",
@@ -280,8 +294,8 @@ export function reviewReport(
       exitCode: 2,
     };
   }
-  // Only when no verdict exists: `--demo` opens the UI on an empty file list too,
-  // and discarding a decision a human just typed is its own inversion.
+  // Only when no verdict exists: a plan review opens the UI on an empty file
+  // list too, and discarding a decision a human just typed is its own inversion.
   if (!outcome.review && (outcome.filteredOut ?? 0) > 0) {
     return {
       kind: "filtered-out",
@@ -315,18 +329,10 @@ export function reviewReport(
   };
   return {
     kind: "verdict",
-    // `note` explains an empty review ("No changes to review in main..feature."),
-    // and it is the same note the two branches above render. Falling back to the
-    // outcome's own copy keeps a caller from setting one and not the other.
-    text: renderAnnotations(review, outcome.files, {
-      ...meta,
-      note: meta.note ?? outcome.note,
-      // A verdict does not make the missing files reappear: the human reviewed
-      // the tracked half and the agent has to know that is all this covers.
-      untrackedScanFailed: meta.untrackedScanFailed ?? outcome.untrackedScanFailed,
-      // Same reasoning: the dropped file is still missing from what was reviewed.
-      droppedPaths: meta.droppedPaths ?? outcome.droppedPaths,
-    }),
+    // A verdict does not make missing files reappear: `meta` still carries
+    // `untrackedScanFailed`/`droppedPaths`, so the header says which changed
+    // files the human never saw, and `note` explains an empty review.
+    text: renderAnnotations(review, outcome.files, meta),
     exitCode: reviewExitCode(review, exitCodeOnComments),
   };
 }

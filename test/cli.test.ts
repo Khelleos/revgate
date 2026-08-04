@@ -39,8 +39,6 @@ test("parseArgs: legacy agentStop hook shapes are bad usage now", () => {
   for (const argv of [
     ["--plan"],
     ["--plan", "PLAN.md"],
-    ["--demo", "--plan"],
-    ["--demo"],
     ["--no-open", "--no-history"],
     ["--history-dir", "/tmp/hist"],
   ]) {
@@ -313,7 +311,6 @@ test("parseArgs: a boolean switch rejects an inline value instead of inverting i
     "--staged",
     "--exit-code-on-comments",
     "--no-open",
-    "--demo",
     "--help",
   ]) {
     for (const value of ["false", "true", ""]) {
@@ -334,11 +331,6 @@ test("parseArgs: the skill's full invocation parses cleanly", () => {
   assert.equal(o.scope.kind, "range");
   assert.equal(o.exitCodeOnComments, true);
   assert.equal(o.open, false);
-});
-
-test("parseArgs: --demo", () => {
-  assert.equal(review().demo, false);
-  assert.equal(review("--demo").demo, true);
 });
 
 test("parseArgs: --help", () => {
@@ -390,13 +382,6 @@ test("parseArgs: --plan with an empty token is no path, not an empty path", () =
   assert.equal(o.open, true);
 });
 
-test("parseArgs: review --demo --plan parses for the bundled sample plan", () => {
-  const o = review("--demo", "--plan");
-  assert.equal(o.demo, true);
-  assert.equal(o.plan, true);
-  assert.equal(o.planFile, undefined);
-});
-
 // --- unknown flags ---------------------------------------------------------
 
 test("parseArgs: an unknown flag is an error on the review path", () => {
@@ -427,7 +412,6 @@ test("helpText: lists every flag and command", () => {
     "--history-dir",
     "--no-history",
     "--no-open",
-    "--demo",
     "--help",
     "-h",
   ]) {

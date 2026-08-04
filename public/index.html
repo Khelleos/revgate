@@ -460,7 +460,7 @@ function render() {
 
   if (changed.length === 0) {
     // Still render the review bar. The server only opens a fileless review when
-    // it wants a verdict anyway (`--demo` on a clean tree), and without the bar
+    // it wants a verdict anyway (a plan review on a clean tree), and without the bar
     // there is no way to submit one — the page would sit there while the caller
     // blocks on waitForSubmission until the hook timeout.
     app.append(

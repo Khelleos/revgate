@@ -1,8 +1,6 @@
-# The two skill trees must be BYTE-identical: `scripts/sync-skills.ts` copies raw
-# bytes and `test/plugin.test.ts` byte-compares the result, so drift fails the
-# suite. With git's Windows default (`core.autocrlf=true`) and no rule here, the
-# same committed blob can materialise as LF in one tree and CRLF in the other —
-# the guard then reports drift that does not exist in the repository, and
-# `npm run sync:skills` "fixes" it with a write git cannot see. Pin both to LF.
+# The skill files are installed by a raw byte copy (install.ps1 Copy-Item) and
+# their quoted command lines are parsed by test/skills.test.ts. With git's
+# Windows default (`core.autocrlf=true`) and no rule here, the same committed
+# blob materialises as CRLF on a Windows checkout — so what gets installed (and
+# tested) differs by platform from what the repository records. Pin to LF.
 .github/skills/** text eol=lf
-copilot-plugin/skills/** text eol=lf

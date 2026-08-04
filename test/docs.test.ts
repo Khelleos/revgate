@@ -91,19 +91,15 @@ test("README: documents where history lives", () => {
   assert.match(readme, /<repo-name>\/<timestamp>\.md/);
 });
 
-test("README: documents the plugin manifests that actually exist", () => {
-  for (const file of [
-    ".github/plugin/marketplace.json",
-    "copilot-plugin/plugin.json",
-    "copilot-plugin/hooks.json",
-    "copilot-plugin/skills/",
-  ]) {
-    assert.ok(readme.includes(file), `README never mentions ${file}`);
-  }
-  assert.match(readme, /\/plugin marketplace add/);
-  assert.match(readme, /\/plugin install revgate-copilot@revgate/);
-  // -Skills is the non-plugin route to the same slash commands.
-  assert.match(readme, /install\.ps1 -Skills/);
+test("README: documents the installer routes", () => {
+  // install.ps1 is the ONLY install path, and it has exactly one route: a plain
+  // run installs the CLI, the skills, and the global plan hook. The removed
+  // scope switches must not resurface, nor may the `/plugin` route.
+  assert.match(readme, /^\.\\install\.ps1$/m, "README never shows a plain .\\install.ps1 run");
+  assert.doesNotMatch(readme, /-Global\b/, "the removed -Global switch resurfaced");
+  assert.doesNotMatch(readme, /-Repo\b/, "the removed -Repo switch resurfaced");
+  assert.doesNotMatch(readme, /-Skills\b/, "the removed -Skills switch resurfaced");
+  assert.doesNotMatch(readme, /\/plugin install|copilot-plugin/, "the removed Copilot plugin route resurfaced");
 });
 
 test("README: credits revdiff and records what was deferred", () => {
@@ -134,7 +130,7 @@ test("agents.md: lists every src module and the project commands", () => {
   ]) {
     assert.ok(agents.includes(mod), `agents.md never mentions src/${mod}`);
   }
-  for (const cmd of ["npm test", "npm run build", "npm run sync:skills", "npm run demo"]) {
+  for (const cmd of ["npm test", "npm run build"]) {
     assert.ok(agents.includes(cmd), `agents.md never mentions ${cmd}`);
   }
 });

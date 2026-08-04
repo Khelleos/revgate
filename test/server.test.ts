@@ -325,7 +325,7 @@ test("POST /api/submit: an under-specified comment is filled in, not passed on r
   });
   // The whole point: rendering it must not throw.
   assert.doesNotThrow(() => renderAnnotations(review, []));
-  assert.equal(buildDecision(review, [], "diff").decision, "block");
+  assert.equal(buildDecision(review, []).decision, "block");
 });
 
 test("POST /api/submit: a comment with an unusable range degrades instead of inverting", async (t) => {

@@ -78,7 +78,7 @@ test("findCopilotPlanContent: a known session with no plan never borrows another
 
 test("findCopilotPlanContent: a session id that isn't a UUID is rejected", async (t) => {
   await copilotHome(t, { [SESSION_A]: "# Plan A\n" });
-  for (const id of ["manual", "cli", "demo", "..", "../..", "not-a-uuid"]) {
+  for (const id of ["manual", "cli", "latest", "..", "../..", "not-a-uuid"]) {
     assert.equal(findCopilotPlanContent(id), null, `expected null for ${id}`);
   }
 });
@@ -132,4 +132,22 @@ test("findCopilotPlanContent: sessions without a plan.md are skipped, not fatal"
 test("findCopilotPlanContent: an empty session id falls back like none at all", async (t) => {
   await copilotHome(t, { [SESSION_A]: "# Plan A\n" });
   assert.equal(findCopilotPlanContent(""), "# Plan A\n");
+});
+
+// --- an empty plan.md is "no plan" -------------------------------------------
+
+test("findCopilotPlanContent: an empty plan.md is no plan, not a plan", async (t) => {
+  // Returning "" would beat the inline plan in the hook's `?? inlinePlan`
+  // fallback, so a truncated plan.md skipped the gate with usable plan text
+  // carried in the very tool call being gated.
+  await copilotHome(t, { [SESSION_A]: "", [SESSION_B]: "   \n\t\n" });
+  assert.equal(findCopilotPlanContent(SESSION_A), null);
+  assert.equal(findCopilotPlanContent(SESSION_B), null);
+});
+
+test("findCopilotPlanContent: the no-session fallback treats an empty newest plan as none", async (t) => {
+  const home = await copilotHome(t, { [SESSION_A]: "# Older\n", [SESSION_B]: "" });
+  await touch(home, SESSION_A, Date.parse("2026-07-01T00:00:00Z"));
+  await touch(home, SESSION_B, Date.parse("2026-07-29T00:00:00Z"));
+  assert.equal(findCopilotPlanContent(), null);
 });

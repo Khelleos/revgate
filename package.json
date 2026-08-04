@@ -11,10 +11,7 @@
     "prepare": "npm run build",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "demo": "tsx src/index.ts review --demo",
-    "demo:plan": "tsx src/index.ts review --demo --plan",
-    "test": "tsx --test test/**/*.test.ts",
-    "sync:skills": "tsx scripts/sync-skills.ts"
+    "test": "tsx --test test/**/*.test.ts"
   },
   "engines": {
     "node": ">=18"
@@ -22,8 +19,7 @@
   "files": [
     "dist",
     "public",
-    "hooks",
-    "copilot-plugin"
+    "hooks"
   ],
   "license": "MIT",
   "devDependencies": {

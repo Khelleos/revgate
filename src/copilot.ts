@@ -25,7 +25,13 @@ export function findCopilotPlanContent(sessionId?: string): string | null {
   if (sessionId) {
     if (/^[a-f0-9-]{36}$/i.test(sessionId)) {
       const planPath = path.join(sessionsDir, sessionId, "plan.md");
-      if (existsSync(planPath)) return readFileSync(planPath, "utf8");
+      if (existsSync(planPath)) {
+        const text = readFileSync(planPath, "utf8");
+        // An empty (or whitespace-only) plan.md is "no plan", not a plan.
+        // Returning "" would beat the inline plan in the caller's `?? inlinePlan`
+        // fallback, skipping the gate with usable plan text in hand.
+        if (text.trim()) return text;
+      }
     }
     return null;
   }
@@ -45,5 +51,7 @@ export function findCopilotPlanContent(sessionId?: string): string | null {
 
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => b.mtime - a.mtime);
-  return readFileSync(candidates[0].path, "utf8");
+  // Same rule as above: an empty newest plan.md is "no plan", not a plan.
+  const text = readFileSync(candidates[0].path, "utf8");
+  return text.trim() ? text : null;
 }

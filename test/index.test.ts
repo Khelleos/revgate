@@ -135,7 +135,6 @@ test("review --help: prints every flag on stdout and exits 0", async () => {
     "--history-dir",
     "--no-history",
     "--no-open",
-    "--demo",
     "--help",
   ]) {
     assert.ok(stdout.includes(flag), `--help should document ${flag}`);
@@ -522,6 +521,9 @@ test("review --plan with no file and no env var: bad usage, not a diff review", 
   });
   assert.equal(code, 2);
   assert.match(stderr, /no plan text was found/);
+  assert.match(stderr, /pass a file or set \$REVGATE_PLAN_FILE/);
+  // The demo feature is gone; the error must not steer anyone toward it.
+  assert.doesNotMatch(stderr, /--demo/);
   assert.doesNotMatch(stdout, /^# revgate review: APPROVED$/m);
 });
 
@@ -549,7 +551,7 @@ test("legacy agentStop invocations exit 2 with a migration hint, not hook JSON",
   const repo = await cleanRepo(t);
   await repo.write("PLAN.md", "# Plan: ship it\n");
   const payload = JSON.stringify({ sessionId: "abc", cwd: repo.dir, stopReason: "end_turn" });
-  for (const argv of [[], ["--no-open"], ["--plan", "PLAN.md", "--no-open"], ["--demo"]]) {
+  for (const argv of [[], ["--no-open"], ["--plan", "PLAN.md", "--no-open"]]) {
     const { code, stdout, stderr } = await run(argv, { cwd: repo.dir, stdin: payload });
     assert.equal(code, 2, `revgate ${argv.join(" ")} must be bad usage`);
     assert.equal(stdout, "", "nothing may reach stdout — least of all a decision");
@@ -615,64 +617,6 @@ test("copilot-plan: stdin that is never closed still completes, via the read tim
   const { code, stdout } = await streams.done;
   assert.equal(code, 0);
   assert.equal(stdout, '{"permissionDecision":"allow"}\n');
-});
-
-// --- --demo ----------------------------------------------------------------
-
-test("review --demo --plan: opens the bundled sample plan", async (t) => {
-  // `npm run demo:plan`, and the first thing the installer tells a new user to
-  // try. Nothing else exercises SAMPLE_PLAN.
-  const repo = await cleanRepo(t);
-  const child = launch(["review", "--demo", "--plan", "--no-open", "--no-history"], {
-    cwd: repo.dir,
-  });
-  const streams = collect(child);
-  t.after(() => {
-    child.kill();
-  });
-  child.stdin.end();
-
-  const url = await waitForUrl(streams.stderr, streams.done);
-  const ctx = (await (await fetch(`${url}api/review`)).json()) as { mode: string; planTitle?: string };
-  assert.equal(ctx.mode, "plan");
-  assert.equal(ctx.planTitle, "Plan: add rate limiting to the public API");
-
-  await fetch(`${url}api/submit`, {
-    method: "POST",
-    headers: pageHeaders(url),
-    body: JSON.stringify({ decision: "approve", summary: "", comments: [] }),
-  });
-  const { code, stdout } = await streams.done;
-  assert.equal(code, 0);
-  assert.match(stdout, /^mode: plan$/m);
-});
-
-test("review --demo: outside a repo, a submitted verdict is reported, not discarded", async (t) => {
-  // --demo opens the UI even with nothing to review, so a human can reach the
-  // submit button on a run that carries `isRepo: false`. Reporting NO REVIEW
-  // CAPTURED there would throw away the verdict they just typed — the same
-  // "the report disagrees with the reviewer" failure as forging an approval,
-  // only inverted.
-  const dir = await tempDir(t, "demo-norepo");
-  const child = launch(["review", "--demo", "--no-open", "--no-history"], { cwd: dir });
-  const streams = collect(child);
-  t.after(() => {
-    child.kill();
-  });
-  child.stdin.end();
-
-  const url = await waitForUrl(streams.stderr, streams.done);
-  await fetch(`${url}api/submit`, {
-    method: "POST",
-    headers: pageHeaders(url),
-    body: JSON.stringify({ decision: "request_changes", summary: "Please fix.", comments: [] }),
-  });
-
-  const { code, stdout } = await streams.done;
-  assert.equal(code, 0, "a captured verdict is not a usage error");
-  assert.match(stdout, /^# revgate review: REQUEST CHANGES$/m);
-  assert.match(stdout, /Please fix\./);
-  assert.doesNotMatch(stdout, /NO REVIEW CAPTURED/);
 });
 
 // --- the preToolUse plan gate contract -------------------------------------
@@ -1112,4 +1056,131 @@ test("copilot-plan: an unparseable args string allows instead of crashing", asyn
   assert.equal(code, 0);
   assert.equal(stdout, '{"permissionDecision":"allow"}\n');
   assert.match(stderr, /no plan text found/);
+});
+
+// --- a failed untracked scan, end to end -------------------------------------
+
+/**
+ * A PATH shim that fails `git ls-files` and delegates every other git call to
+ * the real binary. This is the only way to reach collectDiff's untracked-scan
+ * catch from outside: git itself tolerates a broken excludesFile, and every
+ * in-process test of the flag has to hand it in by construction. POSIX-only —
+ * Node cannot spawn a `.cmd` shim without a shell, so on Windows the shim would
+ * take down every git call, not just the scan.
+ */
+async function gitShimDir(t: { after(fn: () => Promise<void>): void }): Promise<string> {
+  const { execFile } = await import("node:child_process");
+  const real = await new Promise<string>((resolve, reject) =>
+    execFile("/bin/sh", ["-c", "command -v git"], (err, stdout) =>
+      err ? reject(err) : resolve(stdout.trim()),
+    ),
+  );
+  const dir = await tempDir(t, "gitshim");
+  const script = [
+    "#!/bin/sh",
+    'for a in "$@"; do',
+    '  if [ "$a" = "ls-files" ]; then',
+    '    echo "fatal: injected ls-files failure" >&2',
+    "    exit 128",
+    "  fi",
+    "done",
+    `exec "${real}" "$@"`,
+    "",
+  ].join("\n");
+  await writeFile(path.join(dir, "git"), script, { mode: 0o755 });
+  return dir;
+}
+
+test("review: a failed untracked scan over an empty diff is SCAN FAILED and exit 2", async (t) => {
+  if (process.platform === "win32") return t.skip("the git PATH shim needs a POSIX shell script");
+  // The dangerous turn: its whole output is new files, so the tracked diff is
+  // empty and a swallowed scan failure reads as "nothing to review, approve".
+  const repo = await cleanRepo(t);
+  await repo.write("brand-new.txt", "fresh\n");
+  const shim = await gitShimDir(t);
+
+  const { code, stdout, stderr } = await run(["review", "--no-open", "--no-history"], {
+    cwd: repo.dir,
+    env: { PATH: `${shim}:${process.env.PATH ?? ""}` },
+  });
+  assert.equal(code, 2, "an empty diff the scan could not fill must not exit 0");
+  assert.match(stdout, /^# revgate review: SCAN FAILED$/m);
+  assert.match(stdout, /^untracked-scan: failed$/m);
+  assert.doesNotMatch(stdout, /APPROVED/);
+  assert.match(stderr, /could not list untracked files/);
+});
+
+test("review: a verdict over a diff whose scan failed carries the untracked-scan line", async (t) => {
+  if (process.platform === "win32") return t.skip("the git PATH shim needs a POSIX shell script");
+  // The other half of the wiring: a tracked change keeps the UI opening, the
+  // human approves what they can see — and the report still has to say the new
+  // files never reached the diff.
+  const repo = await cleanRepo(t);
+  await repo.write("a.txt", "one\ntwo\n");
+  const shim = await gitShimDir(t);
+
+  const child = launch(["review", "--no-open", "--no-history"], {
+    cwd: repo.dir,
+    env: { PATH: `${shim}:${process.env.PATH ?? ""}` },
+  });
+  const streams = collect(child);
+  child.stdin.end();
+  t.after(async () => {
+    child.kill();
+  });
+
+  const url = await waitForUrl(streams.stderr, streams.done);
+  await fetch(`${url}api/submit`, {
+    method: "POST",
+    headers: pageHeaders(url),
+    body: JSON.stringify({ decision: "approve", summary: "", comments: [] }),
+  });
+
+  const { code, stdout } = await streams.done;
+  assert.equal(code, 0);
+  assert.match(stdout, /^# revgate review: APPROVED$/m);
+  assert.match(stdout, /^untracked-scan: failed$/m);
+});
+
+// --- a missing browser opener ------------------------------------------------
+
+test("review --plan: a missing browser opener degrades to a warning, not a crash", async (t) => {
+  if (process.platform === "win32") return t.skip("Windows resolves cmd.exe outside PATH");
+  // openBrowser's `error` listener is load-bearing: a missing opener (headless
+  // xdg-open) surfaces as an ASYNC error event, and without the listener Node
+  // rethrows it as an uncaughtException — which for the hook paths fails
+  // CLOSED. An empty PATH makes the spawn fail exactly that way; note the
+  // deliberate absence of --no-open.
+  const dir = await tempDir(t, "no-opener");
+  await writeFile(path.join(dir, "PLAN.md"), "# Plan: open sesame\n\nStep one.\n", "utf8");
+  const emptyPath = await tempDir(t, "empty-path");
+
+  const child = launch(["review", "--plan", "PLAN.md", "--no-history"], {
+    cwd: dir,
+    env: { PATH: emptyPath },
+  });
+  const streams = collect(child);
+  child.stdin.end();
+  t.after(async () => {
+    child.kill();
+  });
+
+  const url = await waitForUrl(streams.stderr, streams.done);
+  // The spawn failure is asynchronous, so the warning may trail the URL line.
+  const deadline = Date.now() + 10_000;
+  while (!/could not auto-open browser/.test(streams.stderr())) {
+    if (Date.now() > deadline) {
+      assert.fail(`no opener warning appeared; stderr:\n${streams.stderr()}`);
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  await fetch(`${url}api/submit`, {
+    method: "POST",
+    headers: pageHeaders(url),
+    body: JSON.stringify({ decision: "approve", summary: "", comments: [] }),
+  });
+  const { code, stdout } = await streams.done;
+  assert.equal(code, 0, "a missing opener must not take the review down");
+  assert.match(stdout, /^# revgate review: APPROVED$/m);
 });

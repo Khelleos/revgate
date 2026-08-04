@@ -39,13 +39,11 @@ when you change code:
 npm install            # installs AND builds (prepare → tsc); a type error fails the install
 npm run build          # tsc → dist/
 npm test               # node:test via tsx — needs Node >= 21 (node --test expands the glob); revgate itself runs on 18
-npm run demo           # UI against your working tree, no build
-npm run demo:plan      # plan UI with the bundled sample plan
-npm run sync:skills    # regenerate copilot-plugin/skills/ from .github/skills/
+npm run dev -- review  # UI against your working tree, no build
 ```
 
 Quick manual check: `node dist/index.js review --help`, then
-`node dist/index.js review --demo --no-open`.
+`node dist/index.js review --no-open`.
 
 ## Rules
 
@@ -74,10 +72,6 @@ Quick manual check: `node dist/index.js review --help`, then
   body stalls the turn; and every index mutation — plus the `getStageStates` read
   beside it — runs inside `serializeIndexWork`, because `.git/index.lock` makes
   concurrent `git add`/`reset` fail outright.
-- **Three files carry the version.** `package.json`,
-  `copilot-plugin/plugin.json` and the `revgate-copilot` entry in
-  `.github/plugin/marketplace.json` must all match — `test/plugin.test.ts` fails
-  otherwise. Bump them in one commit.
 - **All git goes through `git()` / `gitDiff()`.** Never call
   `execFileAsync("git", …)` anywhere else: `git()` injects `HARDENED_CONFIG`
   (`core.quotePath`, `diff.relative`, `diff.noprefix`, `diff.mnemonicPrefix`,
@@ -95,17 +89,18 @@ Quick manual check: `node dist/index.js review --help`, then
   review is a file the reviewer approved without seeing.
 - ESM with `.js` import specifiers, `node:`-prefixed builtins, `execFile` (never
   a shell) for git. Zero runtime dependencies — keep it that way.
-- `.github/skills/` is the source of truth for skills; `copilot-plugin/skills/`
-  is generated. `test/skills.test.ts` parses every command line quoted in a
-  SKILL.md through `parseArgs`, and `test/plugin.test.ts` guards against drift —
-  so docs and CLI cannot diverge silently. `test/docs.test.ts` does the same for
+- `.github/skills/` is the only skill tree; `install.ps1` copies it verbatim
+  into `%USERPROFILE%\.copilot\skills\`. `test/skills.test.ts` parses every
+  command line quoted in a SKILL.md through `parseArgs` — so docs and CLI
+  cannot diverge silently. `test/docs.test.ts` does the same for
   `README.md` and this file: every `--help` flag must appear in the README, every
   documented `revgate …` command must parse, and this file must list every `src/`
   module. A doc-only edit can therefore fail `npm test`.
-- **Installed hook files are not source.** `install.ps1 -Repo .` writes
-  `.github/hooks/revgate.json` with an absolute path to *this* clone; it is
-  gitignored. Committing one hands every other clone a `preToolUse` hook that
-  cannot run — and that fails closed.
+- **Installed hook files are not source.** `install.ps1` writes the generated
+  hook only to `%USERPROFILE%\.copilot\hooks\`, with an absolute path to *this*
+  clone. `.github/hooks/revgate.json` is no longer installer output, but it
+  stays gitignored: committing a hand-copied one hands every other clone a
+  `preToolUse` hook that cannot run — and that fails closed.
 - **Tests use real git, never the user's.** Anything touching git builds a
   throwaway repo with `createRepo()` from `test/helpers/repo.ts` — it pins
   `user.name`/`user.email`, disables signing and `core.autocrlf`, and starts on
@@ -113,7 +108,7 @@ Quick manual check: `node dist/index.js review --help`, then
   checkout: node:test runs test files concurrently, so a `npm install`/`npm run
   build` mid-suite rewrites `node_modules/` and `dist/` under the ~200 tests that
   spawn children out of them (hence `install.ps1 -SkipBuild` in
-  `test/plugin.test.ts`).
+  `test/install.test.ts`).
 - **`src/index.ts` cannot be imported.** It runs `main()` on import, so
   `test/index.test.ts` spawns it as a real process and asserts on stdout, stderr
   and the exit code — the only honest way to test the three output contracts.

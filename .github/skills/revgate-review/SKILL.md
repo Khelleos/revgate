@@ -55,8 +55,8 @@ Other flags worth knowing: `--output review.md` writes the annotations to a file
 instead of stdout, `--no-open` skips auto-opening the browser, `--history-dir` and
 `--no-history` control where (or whether) the review is archived.
 
-`--exit-code-on-comments`, `--no-history`, `--no-open`, `--staged` and `--demo`
-are switches that take **no value**. Writing `--no-history=false` is a usage
+`--exit-code-on-comments`, `--no-history`, `--no-open` and `--staged` are
+switches that take **no value**. Writing `--no-history=false` is a usage
 error (exit 2), not "keep the history" — omit the flag to get the default.
 Conversely, a flag that takes a value rejects an empty one: `-o ""` or
 `-I "$SCOPE"` with the variable unset is a usage error (exit 2), not "no output

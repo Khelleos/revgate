@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { rename, symlink, writeFile } from "node:fs/promises";
+import { chmod, rename, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { parseUnifiedDiff } from "../src/diff.js";
@@ -986,4 +986,26 @@ test("collectDiff: a symlink elided by the file budget is still announced as a s
     /diff --git a\/zz\.link b\/zz\.link\nnew file mode 120000\n/,
     "an elided symlink was announced as a regular file",
   );
+});
+
+test("collectDiff: an unreadable untracked file is listed unexpanded, never dropped", async (t) => {
+  // untrackedFileDiff's catch lists a file it cannot read without a diff.
+  // Returning "" there removed the file from collectDiff's output entirely —
+  // the one path where a file silently left the review — and nothing else
+  // guards that invariant.
+  if (process.platform === "win32") return t.skip("chmod 0o000 does not forbid reads on Windows");
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    return t.skip("root reads files regardless of their mode");
+  }
+  const repo = await createRepo({ "a.txt": "one\n" });
+  t.after(() => repo.cleanup());
+  await repo.write("locked.txt", "cannot be read\n");
+  await chmod(path.join(repo.dir, "locked.txt"), 0o000);
+
+  const diff = await collectDiff(repo.dir, scope({ kind: "worktree" }));
+  assert.ok(!diff.untrackedScanFailed, "one unreadable file is not a failed scan");
+  assert.ok(!diff.unified.includes("cannot be read"), "unreadable content leaked into the diff");
+  const entry = parseUnifiedDiff(diff.unified).find((f) => f.path === "locked.txt");
+  assert.ok(entry, "the unreadable file left the review entirely");
+  assert.equal(entry.hunks.length, 0, "there is no readable content to expand");
 });

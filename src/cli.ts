@@ -17,11 +17,6 @@ export interface CliOptions {
    * at compile time, so this adds no runtime coupling to git.
    */
   scope: DiffScope;
-  /**
-   * `--demo`: open the UI even with nothing to review — a real working-tree diff
-   * on the diff path, the bundled sample plan with `--plan`.
-   */
-  demo: boolean;
   /** False when `--no-open` was passed. */
   open: boolean;
   /** `--plan` was passed: review a plan document instead of a diff. */
@@ -69,8 +64,6 @@ Options:
                           or ~/.revgate/history)
       --no-history        do not save the review to the history directory
       --no-open           do not open the browser automatically
-      --demo              open the UI even when there is nothing to review
-                          (with --plan, review a bundled sample plan)
   -h, --help              show this help
 
 Exit codes:
@@ -107,7 +100,6 @@ function splitRange(arg: string): { refs: [string, string]; dots: ".." | "..." }
 function defaultOptions(): CliOptions {
   return {
     scope: { kind: "worktree", refs: [], include: [], exclude: [] },
-    demo: false,
     open: true,
     plan: false,
     exitCodeOnComments: false,
@@ -224,10 +216,6 @@ function parseOptions(rest: string[]): {
       case "--help":
         rejectValue();
         options.help = true;
-        break;
-      case "--demo":
-        rejectValue();
-        options.demo = true;
         break;
       case "--no-open":
         rejectValue();

@@ -8,7 +8,8 @@ dist/
 # it so the next `git add -A` cannot bring it back.
 Microsoft/
 
-# `install.ps1 -Repo .` writes this clone's hook here, pinned to an absolute
-# path to *this* machine's dist/index.js. Committing it would hand every other
-# clone a preToolUse hook that cannot run — and preToolUse fails closed.
+# The installer only writes the global hook, but a hand-copied hooks/revgate.json
+# template can still land here, pinned to an absolute path to *this* machine's
+# dist/index.js. Committing it would hand every other clone a preToolUse hook
+# that cannot run — and preToolUse fails closed.
 .github/hooks/
