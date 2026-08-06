@@ -16,6 +16,37 @@ export function groupCommentsByFile(comments: LineComment[]): Map<string, LineCo
 }
 
 /**
+ * True when a comment carries no usable line number — the file-level sentinel
+ * `normalizeComment` produces. Shared so neither renderer can invent a location
+ * the other one doesn't have: one showing a bare `path` while the other says
+ * `path:0` points the agent at a line no file has.
+ */
+export function isFileLevelComment(c: LineComment): boolean {
+  return !Number.isInteger(c.startLine) || c.startLine < 1;
+}
+
+/**
+ * Where a comment points, in the form BOTH output contracts render: `path:LINE (+)`
+ * on the new side, `(-)` on the old, `path:START-END` for a range, and a bare
+ * `path` when it is file-level.
+ *
+ * Shared for the same reason as `groupCommentsByFile`, and with more at stake. A
+ * diff has two line numberings, and the marker is the only thing saying which one
+ * a number belongs to — the old side numbers a file that no longer exists on disk.
+ * The hook prose used to build this string itself and omit the marker, so an
+ * old-side comment reached the agent as a plausible *new*-side line number with
+ * the deleted code quoted under it: an accurate quote under a location pointing
+ * somewhere else entirely. Dormant while `buildDecision` is plan-only (a plan is
+ * all new-side lines), and live the moment a diff reaches this renderer.
+ */
+export function locationHeader(c: LineComment): string {
+  if (isFileLevelComment(c)) return c.file;
+  const marker = c.side === "old" ? "(-)" : "(+)";
+  const span = c.endLine > c.startLine ? `${c.startLine}-${c.endLine}` : `${c.startLine}`;
+  return `${c.file}:${span} ${marker}`;
+}
+
+/**
  * Turn a submitted plan review into the HookDecision that goes back to Copilot.
  *
  * - approve         -> allow  (Copilot proceeds with the plan)
@@ -79,18 +110,13 @@ function renderPrompt(review: ReviewSubmission, files: DiffFile[]): string {
     for (const [file, comments] of groupCommentsByFile(review.comments)) {
       out.push(`\n### ${file}`);
       for (const c of comments) {
-        // `startLine < 1` is the file-level sentinel normalizeComment produces
-        // for a comment with no usable line number, and which the annotation
-        // renderer shows as a bare `## path`. Rendering it as `path:0` here
-        // would point the agent at a line no file has, and make the two output
-        // contracts disagree about a sentinel one of them introduced.
-        const isFileLevel = !Number.isInteger(c.startLine) || c.startLine < 1;
+        // The location comes from the shared renderer, so this prose and the
+        // annotation records can never describe the same comment differently —
+        // including the `(+)`/`(-)` marker, without which a line number does not
+        // say which side of the diff it counts.
+        const isFileLevel = isFileLevelComment(c);
         const isRange = !isFileLevel && c.endLine > c.startLine;
-        const loc = isFileLevel
-          ? file
-          : isRange
-            ? `${file}:${c.startLine}-${c.endLine}`
-            : `${file}:${c.startLine}`;
+        const loc = locationHeader(c);
         const code = isFileLevel
           ? []
           : rangeLines(files, c.file, c.startLine, c.endLine, c.side);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDecision } from "../src/feedback.js";
-import type { DiffFile, ReviewSubmission } from "../src/types.js";
+import { buildDecision, isFileLevelComment, locationHeader } from "../src/feedback.js";
+import type { DiffFile, LineComment, ReviewSubmission } from "../src/types.js";
 
 const appFile: DiffFile = {
   oldPath: "src/app.ts",
@@ -64,6 +64,50 @@ const review = (over: Partial<ReviewSubmission> = {}): ReviewSubmission => ({
   ...over,
 });
 
+const comment = (over: Partial<LineComment> = {}): LineComment => ({
+  file: "src/app.ts",
+  startLine: 2,
+  endLine: 2,
+  side: "new",
+  body: "Use const.",
+  ...over,
+});
+
+// --- shared location format ------------------------------------------------
+// Both output contracts render a comment's location through `locationHeader`,
+// so a change here moves the annotation records and the hook prose together.
+
+test("locationHeader: single line on the new side", () => {
+  assert.equal(locationHeader(comment()), "src/app.ts:2 (+)");
+});
+
+test("locationHeader: single line on the old side", () => {
+  assert.equal(locationHeader(comment({ side: "old" })), "src/app.ts:2 (-)");
+});
+
+test("locationHeader: a range keeps both endpoints", () => {
+  assert.equal(locationHeader(comment({ startLine: 12, endLine: 13 })), "src/app.ts:12-13 (+)");
+  assert.equal(
+    locationHeader(comment({ startLine: 4, endLine: 9, side: "old" })),
+    "src/app.ts:4-9 (-)",
+  );
+});
+
+test("locationHeader: no usable line number is a file-level record", () => {
+  assert.equal(locationHeader(comment({ startLine: 0, endLine: 0 })), "src/app.ts");
+  assert.equal(locationHeader(comment({ startLine: -1, endLine: -1 })), "src/app.ts");
+  assert.equal(locationHeader(comment({ startLine: NaN, endLine: NaN })), "src/app.ts");
+});
+
+test("isFileLevelComment: only an unusable line number is file-level", () => {
+  assert.equal(isFileLevelComment(comment()), false);
+  assert.equal(isFileLevelComment(comment({ startLine: 1, endLine: 1 })), false);
+  assert.equal(isFileLevelComment(comment({ startLine: 0, endLine: 0 })), true);
+  assert.equal(isFileLevelComment(comment({ startLine: -1, endLine: -1 })), true);
+  assert.equal(isFileLevelComment(comment({ startLine: NaN, endLine: NaN })), true);
+  assert.equal(isFileLevelComment(comment({ startLine: 1.5, endLine: 1.5 })), true);
+});
+
 test("buildDecision: approve allows with no reason", () => {
   const decision = buildDecision(review({ decision: "approve", summary: "ship it" }), files);
   assert.deepEqual(decision, { decision: "allow" });
@@ -104,9 +148,9 @@ test("buildDecision: request_changes renders the full block prompt", () => {
       "## Plan comments",
       "",
       "### src/app.ts",
-      "- **src/app.ts:2**  (`let x = 1;`)",
+      "- **src/app.ts:2 (+)**  (`let x = 1;`)",
       "  Use const.",
-      "- **src/app.ts:12-13**",
+      "- **src/app.ts:12-13 (+)**",
       "  ```",
       "    const big = compute();",
       "    return big;",
@@ -115,7 +159,7 @@ test("buildDecision: request_changes renders the full block prompt", () => {
       "  Seriously.",
       "",
       "### other.ts",
-      "- **other.ts:1**  (`const gone = true;`)",
+      "- **other.ts:1 (-)**  (`const gone = true;`)",
       "  Why removed?",
       "",
     ].join("\n"),
@@ -130,7 +174,7 @@ test("buildDecision: single-line comment quotes the line inline", () => {
     files,
   );
   const reason = decision.reason ?? "";
-  assert.match(reason, /^- \*\*src\/app\.ts:2\*\* {2}\(`let x = 1;`\)$/m);
+  assert.match(reason, /^- \*\*src\/app\.ts:2 \(\+\)\*\* {2}\(`let x = 1;`\)$/m);
   assert.doesNotMatch(reason, /```/);
 });
 
@@ -142,7 +186,10 @@ test("buildDecision: range comment quotes the lines as a fenced block", () => {
     files,
   );
   const reason = decision.reason ?? "";
-  assert.match(reason, /- \*\*src\/app\.ts:12-13\*\*\n {2}```\n {4}const big = compute\(\);\n/);
+  assert.match(
+    reason,
+    /- \*\*src\/app\.ts:12-13 \(\+\)\*\*\n {2}```\n {4}const big = compute\(\);\n/,
+  );
 });
 
 test("buildDecision: old-side comment resolves against deleted lines", () => {
@@ -152,7 +199,24 @@ test("buildDecision: old-side comment resolves against deleted lines", () => {
     }),
     files,
   );
-  assert.match(decision.reason ?? "", /- \*\*other\.ts:1\*\* {2}\(`const gone = true;`\)/);
+  assert.match(decision.reason ?? "", /- \*\*other\.ts:1 \(-\)\*\* {2}\(`const gone = true;`\)/);
+});
+
+test("buildDecision: an old-side location is marked as one", () => {
+  // The quoted code always came from the right side, but the location string was
+  // built here without the marker — so a comment on a deleted line reached the
+  // agent as a bare `other.ts:1`, which reads as line 1 of the file on disk. The
+  // agent would go there, find something else, and have an accurate quote filed
+  // under a location pointing somewhere it never was.
+  const decision = buildDecision(
+    review({
+      comments: [{ file: "other.ts", startLine: 1, endLine: 1, side: "old", body: "Why?" }],
+    }),
+    files,
+  );
+  const reason = decision.reason ?? "";
+  assert.doesNotMatch(reason, /\*\*other\.ts:1\*\*/);
+  assert.match(reason, /\(-\)/);
 });
 
 test("buildDecision: comment on an unknown file omits the code reference", () => {
@@ -163,7 +227,7 @@ test("buildDecision: comment on an unknown file omits the code reference", () =>
     files,
   );
   const reason = decision.reason ?? "";
-  assert.match(reason, /^- \*\*missing\.ts:5\*\*$/m);
+  assert.match(reason, /^- \*\*missing\.ts:5 \(\+\)\*\*$/m);
 });
 
 test("buildDecision: empty request_changes falls back to an ask-the-human prompt", () => {

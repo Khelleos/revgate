@@ -19,8 +19,8 @@
  * beneath it up to the next header is that comment's body. Continuation lines
  * are prefixed with one space so a body can never be mistaken for a header.
  */
-import { groupCommentsByFile } from "./feedback.js";
-import type { DiffFile, LineComment, ReviewSubmission } from "./types.js";
+import { groupCommentsByFile, locationHeader } from "./feedback.js";
+import type { DiffFile, ReviewSubmission } from "./types.js";
 
 export interface AnnotationMeta {
   /** Plan reviews annotate a synthetic document, not a git diff. */
@@ -57,18 +57,6 @@ function renderBody(text: string): string[] {
   return trimmed
     .split(/\r?\n/)
     .map((line, i) => (i === 0 && !line.startsWith("#") ? line : ` ${line}`));
-}
-
-/**
- * The location half of a record header. A comment with no usable line number
- * is file-level (`## path`); otherwise `## path:LINE (+)`, `## path:LINE (-)`
- * for the old side, or `## path:START-END (+)` for a range.
- */
-export function locationHeader(c: LineComment): string {
-  if (!Number.isInteger(c.startLine) || c.startLine < 1) return c.file;
-  const marker = c.side === "old" ? "(-)" : "(+)";
-  const span = c.endLine > c.startLine ? `${c.startLine}-${c.endLine}` : `${c.startLine}`;
-  return `${c.file}:${span} ${marker}`;
 }
 
 /** True when the review carries something the agent has to act on. */

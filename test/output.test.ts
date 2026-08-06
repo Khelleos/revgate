@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   hasFindings,
-  locationHeader,
   renderAnnotations,
   renderNoReview,
   renderDroppedPaths,
@@ -57,29 +56,8 @@ function records(text: string): string[] {
     .map((r) => r.trim());
 }
 
-// --- header format ---------------------------------------------------------
-
-test("locationHeader: single line on the new side", () => {
-  assert.equal(locationHeader(comment()), "src/app.ts:2 (+)");
-});
-
-test("locationHeader: single line on the old side", () => {
-  assert.equal(locationHeader(comment({ side: "old" })), "src/app.ts:2 (-)");
-});
-
-test("locationHeader: a range keeps both endpoints", () => {
-  assert.equal(locationHeader(comment({ startLine: 12, endLine: 13 })), "src/app.ts:12-13 (+)");
-  assert.equal(
-    locationHeader(comment({ startLine: 4, endLine: 9, side: "old" })),
-    "src/app.ts:4-9 (-)",
-  );
-});
-
-test("locationHeader: no usable line number is a file-level record", () => {
-  assert.equal(locationHeader(comment({ startLine: 0, endLine: 0 })), "src/app.ts");
-  assert.equal(locationHeader(comment({ startLine: -1, endLine: -1 })), "src/app.ts");
-  assert.equal(locationHeader(comment({ startLine: NaN, endLine: NaN })), "src/app.ts");
-});
+// `locationHeader` itself now lives in feedback.ts, shared with the hook prose —
+// its own tests moved there with it. What stays here is that the records use it.
 
 // --- full render -----------------------------------------------------------
 
