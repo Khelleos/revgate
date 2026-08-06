@@ -334,6 +334,64 @@ Approvals with no comments are not archived. History failures never fail a
 review: they warn to stderr and continue, so a read-only home directory can't
 wedge a gate. Opt out per-run with `--no-history`.
 
+### Themes
+
+The review page ships five built-in colour themes, picked from the dropdown in
+its header:
+
+| Theme | Kind |
+| --- | --- |
+| Dark Modern | the default dark palette |
+| Light Modern | the default light palette |
+| Monokai | dark |
+| Solarized Light | light |
+| Dracula | dark |
+
+The default is **System**, which is a real choice rather than the absence of
+one: it follows the OS through `prefers-color-scheme`, resolving to Dark Modern
+or Light Modern, and re-resolves live — flip your OS between light and dark
+mid-review and the page follows without a reload.
+
+Your pick is saved server-side, in:
+
+```
+~/.revgate/config.json
+```
+
+```json
+{ "theme": "dracula" }
+```
+
+It has to live on disk rather than in the browser. The review server binds a
+random port, so every run is a distinct origin with its own empty
+`localStorage` — a browser-side store would forget the choice the moment the
+review closed, every time.
+
+`$REVGATE_CONFIG_DIR` overrides **the directory the config file lives in**; the
+file inside it is always named `config.json`. Note this is deliberately not the
+same shape as `$REVGATE_HISTORY_DIR`, which names the history directory
+*itself*:
+
+| Variable | What it names | Resulting path |
+| --- | --- | --- |
+| `$REVGATE_CONFIG_DIR` | the directory *holding* `config.json` | `<dir>/config.json` |
+| `$REVGATE_HISTORY_DIR` | the history directory itself | `<dir>/<repo>/<timestamp>.md` |
+
+So the defaults are `~/.revgate` and `~/.revgate/history` respectively — setting
+`$REVGATE_CONFIG_DIR` to a `history`-shaped path is the mistake to avoid.
+
+Theme handling never fails a review. A missing config is the normal first run
+and is silent; an unreadable or malformed one, a saved id this version doesn't
+know, or a home directory that can't be written falls back to `system`, and the
+last three warn to stderr. Saving is best-effort in the same spirit: a write
+that fails is reported to stderr only, because answering an error would make the
+page undo a change you can plainly see. If the page can't load the themes at all
+it renders without the picker rather than not rendering. A cosmetic subsystem
+must not be able to wedge a gate.
+
+Themes are the built-in five only — see "Design notes" for why user-authored
+theme files were deferred.
+
 ## Plan review
 
 revgate can also gate the agent *before* it writes code — reviewing the **plan**
@@ -444,14 +502,33 @@ as its one hook-driven exception (the `revdiff-planning` plugin), and since
 fired at every turn end is gone, and the `preToolUse` plan gate is the only
 thing that runs unasked.
 
+Adopted in **reduced** form:
+
+- **Themes**, as the five built-ins above and nothing else. revdiff's themes are
+  a TUI feature; the palettes port to a browser page, the loader for
+  user-authored theme files does not — see below.
+- **A config file**, holding exactly one key. This one was on the deferred list
+  until themes landed, on the reasoning that flags plus `$REVGATE_HISTORY_DIR`,
+  `$REVGATE_PLAN_FILE` and `$COPILOT_HOME` covered everything it would hold.
+  That turned out to be wrong for anything the *page* chooses: the random port
+  means each run is a fresh browser origin, so no browser-side store can persist
+  a preference across reviews. `~/.revgate/config.json` exists for precisely
+  that gap, and holds only what falls into it.
+
 Deliberately **not** adopted, because revgate is a browser UI rather than a TUI
 and a human is the reviewer rather than an LLM:
 
-- the terminal UI, themes, vim motions and blame view
+- the terminal UI, vim motions and blame view
 - Mercurial / Jujutsu support
 - `--stdin` and `--only`
-- a config file — flags plus `$REVGATE_HISTORY_DIR`, `$REVGATE_PLAN_FILE` and
-  `$COPILOT_HOME` cover everything it would hold
+- user-authored themes — dropping a JSON theme into `~/.revgate/themes/`. The
+  file format is the small part; what makes it usable is the bootstrap around it
+  (dump a valid starting file, validate before adopting, ship examples to copy),
+  and without that a user hand-authors against one README example and sees a
+  validation failure only as a stderr warning nobody reads. It would also be the
+  one place this feature has to start policing colour *values*, since a
+  hand-written `url(…)` would fire an outbound request from a page that is
+  otherwise deliberately network-free.
 
 revgate keeps what revdiff doesn't have: a Copilot-native plan gate, and a
 browser review UI where a person leaves the comments.

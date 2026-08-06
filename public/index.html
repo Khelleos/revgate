@@ -27,19 +27,11 @@
     --tok-com: #8b949e; --tok-str: #a5d6ff; --tok-num: #79c0ff; --tok-kw: #ff7b72;
     --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   }
-  /* Light palette shared by an explicit choice and the system-default fallback. */
-  :root[data-theme="light"] {
-    --bg: #ffffff; --bg2: #f6f8fa; --bg3: #eaeef2;
-    --border: #d0d7de; --text: #1f2328; --muted: #57606a;
-    --add-bg: #e6ffec; --add-line: #ccffd8; --add-gutter: #ccffd8;
-    --del-bg: #ffebe9; --del-line: #ffd7d5; --del-gutter: #ffd7d5;
-    --accent: #0969da; --green: #1a7f37; --amber: #8a5d00; --danger: #cf222e;
-    --sel: #54aeff55;
-    --tok-com: #6e7781; --tok-str: #0a3069; --tok-num: #0550ae; --tok-kw: #cf222e;
-  }
-  /* No explicit choice yet: follow the OS. An explicit data-theme wins over this. */
+  /* First paint only: the saved theme arrives from /api/themes and lands as
+     inline custom properties on documentElement, which outrank both blocks.
+     Kept so system-light users — the default — never see a dark frame. */
   @media (prefers-color-scheme: light) {
-    :root:not([data-theme]) {
+    :root {
       --bg: #ffffff; --bg2: #f6f8fa; --bg3: #eaeef2;
       --border: #d0d7de; --text: #1f2328; --muted: #57606a;
       --add-bg: #e6ffec; --add-line: #ccffd8; --add-gutter: #ccffd8;
@@ -67,10 +59,12 @@
   header .spacer { flex: 1; }
   .badge { font-size: 12px; background: var(--bg3); border: 1px solid var(--border);
     border-radius: 999px; padding: 2px 10px; color: var(--muted); }
-  .themetoggle { display: inline-flex; align-items: center; justify-content: center;
-    width: 30px; height: 30px; padding: 0; border-radius: 6px; font-size: 15px; line-height: 1;
-    background: transparent; border: 1px solid var(--border); color: var(--muted); }
-  .themetoggle:hover { background: var(--bg3); color: var(--text); }
+  /* Themed with the same custom properties as everything else, so the closed
+     control follows the palette; the open dropdown follows color-scheme. */
+  .themepicker { font: inherit; font-size: 12px; line-height: 1; padding: 5px 8px;
+    border-radius: 6px; cursor: pointer;
+    background: var(--bg3); border: 1px solid var(--border); color: var(--text); }
+  .themepicker:hover { border-color: var(--accent); }
 
   .layout { display: grid; grid-template-columns: 260px minmax(0, 1fr) 320px;
     grid-template-areas: "tree diff remarks"; min-height: calc(100vh - 49px); }
@@ -230,19 +224,17 @@
   .warnbar { margin: 10px; padding: 8px 12px; border-radius: 6px; font-size: 13px;
     border: 1px solid var(--amber); color: var(--amber); background: var(--bg2); }
 </style>
-<script>
-  // Apply any saved theme before first paint so the page never flashes the wrong one.
-  try {
-    const t = localStorage.getItem("revgate-theme");
-    if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
-  } catch (e) { /* storage blocked — fall back to the OS theme */ }
-</script>
 </head>
 <body>
 <div id="app"><div class="empty">Loading review…</div></div>
 
 <script>
-const state = { ctx: null, comments: [], submitted: false, selected: null };
+const state = {
+  ctx: null, comments: [], submitted: false, selected: null,
+  // Every palette /api/themes returned, plus the id the user picked. The applied
+  // colours live on documentElement, so they outlive any number of re-renders.
+  themes: [], selectedTheme: "system",
+};
 const $ = (sel, el = document) => el.querySelector(sel);
 const el = (tag, props = {}, children = []) => {
   const n = document.createElement(tag);
@@ -398,32 +390,98 @@ function highlight(content, lang) {
   return frag;
 }
 
-/** The theme actually showing: an explicit override, else whatever the OS asks for. */
-function effectiveTheme() {
-  const t = document.documentElement.dataset.theme;
-  if (t === "light" || t === "dark") return t;
-  return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+/* ---- Themes ------------------------------------------------------------- *
+ * /api/themes hands over every palette as a complete colour map, so a switch
+ * is a local repaint: no round trip, and no way to end up half-themed.      */
+const lightQuery = matchMedia("(prefers-color-scheme: light)");
+
+/** The palette an id paints with. `system` carries none — the OS decides. */
+function resolveTheme(id) {
+  const wanted = id === "system" ? (lightQuery.matches ? "light-modern" : "dark-modern") : id;
+  return state.themes.find((t) => t.id === wanted) || null;
 }
-function applyTheme(theme) {
-  document.documentElement.dataset.theme = theme;
-  try { localStorage.setItem("revgate-theme", theme); } catch (e) { /* storage blocked */ }
-  updateThemeToggle();
+
+/** Paint a theme by writing its properties onto the root element. */
+function applyTheme(id) {
+  const theme = resolveTheme(id);
+  if (!theme) return; // themes never arrived — the CSS default is still showing
+  const root = document.documentElement;
+  for (const [prop, value] of Object.entries(theme.colors)) root.style.setProperty(prop, value);
+  // Not decoration: this is what makes the browser paint the picker's own
+  // dropdown, the scrollbars and every native control in the matching mode.
+  // Without it a dark theme gets a light dropdown floating over it.
+  root.style.colorScheme = theme.type;
 }
-/** Show the icon for the theme a click would switch TO. */
-function updateThemeToggle() {
-  const btn = document.getElementById("theme-toggle");
-  if (!btn) return;
-  const goingToLight = effectiveTheme() === "dark";
-  btn.textContent = goingToLight ? "☀" : "☾";
-  const label = goingToLight ? "Switch to light theme" : "Switch to dark theme";
-  btn.title = label;
-  btn.setAttribute("aria-label", label);
+
+// While `system` is selected an OS switch mid-review has to follow, without a
+// reload; once an explicit theme is picked the query stops mattering.
+lightQuery.addEventListener("change", () => {
+  if (state.selectedTheme === "system") applyTheme("system");
+});
+
+/** Repaint immediately, then persist. */
+async function selectTheme(id) {
+  state.selectedTheme = id;
+  applyTheme(id);
+  try {
+    const res = await fetch("/api/theme", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) console.warn(`revgate: theme not saved (HTTP ${res.status}).`);
+  } catch (e) {
+    // The visual change stands either way: losing the choice at the next run is
+    // a far smaller failure than undoing the one the user just made.
+    console.warn("revgate: theme not saved:", e);
+  }
+}
+
+/** Build the picker from state — render() rebuilds the header, so this reruns. */
+function renderThemePicker() {
+  if (state.themes.length === 0) return null; // /api/themes failed; no picker, page intact
+  const select = el("select", {
+    id: "theme-picker", class: "themepicker", "aria-label": "Colour theme", title: "Colour theme",
+    onchange: (e) => selectTheme(e.target.value),
+  });
+  select.append(
+    el("optgroup", { label: "System" }, [el("option", { value: "system", text: "System" })]),
+    el("optgroup", { label: "Built-in" },
+      state.themes.map((t) => el("option", { value: t.id, text: t.name }))),
+  );
+  select.value = state.selectedTheme;
+  return select;
+}
+
+/** Fill the header's picker slot, from whichever side arrived last. */
+function mountThemePicker() {
+  const slot = document.getElementById("theme-slot");
+  if (!slot) return; // no header on screen (still loading, or already submitted)
+  slot.innerHTML = "";
+  const picker = renderThemePicker();
+  if (picker) slot.append(picker);
 }
 
 async function load() {
   const res = await fetch("/api/review");
   state.ctx = await res.json();
   render();
+}
+
+/**
+ * Loaded on its own, deliberately not joined to /api/review: a themes failure
+ * that rejected a shared promise would leave the page stuck on "Loading
+ * review…" — the same wedge the server's degrade-don't-throw posture exists to
+ * prevent, just moved into the client. On failure the picker is omitted and
+ * the built-in default palette stands.
+ */
+async function loadThemes() {
+  const res = await fetch("/api/themes");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const listing = await res.json();
+  state.themes = Array.isArray(listing.themes) ? listing.themes : [];
+  state.selectedTheme = listing.selected || "system";
+  applyTheme(state.selectedTheme);
+  mountThemePicker();
 }
 
 function render() {
@@ -449,10 +507,9 @@ function render() {
     el("span", { class: "spacer" }),
     plan ? el("span", { class: "badge", text: "Plan review" }) : el("span", { class: "badge", text: `${changed.length} files` }),
     plan ? el("span", { class: "badge", text: `${lineCount} lines` }) : el("span", { class: "badge", text: `+${totalAdd} −${totalDel}` }),
-    el("button", { id: "theme-toggle", class: "themetoggle", type: "button",
-      onclick: () => applyTheme(effectiveTheme() === "dark" ? "light" : "dark") }),
+    el("span", { id: "theme-slot" }),
   ]));
-  updateThemeToggle();
+  mountThemePicker();
 
   // Before the file list, on both the empty and the populated branch: a warning
   // says the diff below is incomplete, which changes what approving it means.
@@ -979,6 +1036,10 @@ document.addEventListener("mouseup", finishRangeDrag);
 
 load().catch((e) => {
   $("#app").innerHTML = `<div class="empty">Failed to load review: ${e.message}</div>`;
+});
+loadThemes().catch((e) => {
+  // Cosmetic subsystem: the review still has to be reviewable without it.
+  console.warn("revgate: could not load themes:", e);
 });
 </script>
 </body>

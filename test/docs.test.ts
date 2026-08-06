@@ -102,10 +102,34 @@ test("README: documents the installer routes", () => {
   assert.doesNotMatch(readme, /\/plugin install|copilot-plugin/, "the removed Copilot plugin route resurfaced");
 });
 
+test("README: documents where the theme config lives", () => {
+  // The deferred-items loop below is a substring check, so it stayed green
+  // whether themes were adopted or not. These are the assertions that actually
+  // hold the theme docs to the code — including the shape of
+  // $REVGATE_CONFIG_DIR, which names the directory holding config.json rather
+  // than the file, unlike $REVGATE_HISTORY_DIR which names its directory itself.
+  assert.match(readme, /~\/\.revgate\/config\.json/);
+  assert.match(readme, /\$REVGATE_CONFIG_DIR/);
+  assert.match(readme, /the directory .{0,40}config\.json/i);
+  assert.match(readme, /the history directory \*?itself\*?/i);
+  for (const theme of ["Dark Modern", "Light Modern", "Monokai", "Solarized Light", "Dracula"]) {
+    assert.ok(readme.includes(theme), `README never mentions the ${theme} theme`);
+  }
+  // `system` is the default and a real id, not the absence of a choice — a bare
+  // /System/ would be satisfied by the word appearing anywhere in the README.
+  assert.match(readme, /\*\*System\*\*, which is a real choice/);
+  // A missing config is every first run; documenting it as a warning would
+  // promise a stderr line that readThemeConfig deliberately does not emit.
+  assert.match(readme, /A missing config is the normal first run\s+and is silent/);
+});
+
 test("README: credits revdiff and records what was deferred", () => {
   assert.match(readme, /Design notes: what we took from revdiff/);
   assert.match(readme, /github\.com\/umputun\/revdiff/);
-  for (const deferred of ["TUI", "themes", "blame", "Jujutsu", "--stdin", "--only", "config file"]) {
+  // "themes" and "config file" left this list when they were adopted in reduced
+  // form; user-authored themes are what stayed deferred, and the test above is
+  // what guards the adopted half.
+  for (const deferred of ["TUI", "blame", "Jujutsu", "--stdin", "--only", "user-authored themes"]) {
     assert.ok(
       new RegExp(deferred.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(readme),
       `README does not say whether ${deferred} was adopted`,
@@ -125,6 +149,7 @@ test("agents.md: lists every src module and the project commands", () => {
     "feedback.ts",
     "output.ts",
     "history.ts",
+    "theme.ts",
     "log.ts",
     "types.ts",
   ]) {

@@ -30,6 +30,7 @@ when you change code:
 | `src/feedback.ts` | `buildDecision` — renders the hook JSON and the block prompt; `groupCommentsByFile` |
 | `src/output.ts` | `renderAnnotations`, `renderNoReview`, `reviewReport`, `reviewExitCode`, `hasFindings` — the agent-readable contract |
 | `src/history.ts` | `saveHistory` — archives reviews under `<historyDir>/<repo>/<timestamp>.md` |
+| `src/theme.ts` | Built-in palettes + `~/.revgate/config.json` — the only store that survives a session, since the random port makes every run a new browser origin |
 | `src/log.ts` | `log` / `warn` — **stderr only** |
 | `src/types.ts` | Shared types |
 
@@ -57,6 +58,21 @@ Quick manual check: `node dist/index.js review --help`, then
   `review` invocation (a bad one exits 2; it must never fall through to a hook
   shape on stdout).
 - **History is best-effort.** `saveHistory` never throws; it warns and continues.
+- **Theme config is best-effort too, and single-key.** Nothing in `src/theme.ts`
+  throws: a bad config or an unwritable `$REVGATE_CONFIG_DIR` (default
+  `~/.revgate`) warns and degrades to `system`, and `POST /api/theme` answers
+  200 even on a failed write, because the page has already repainted and an
+  error would make it undo a change the user can see. `writeThemeConfig`
+  rewrites the whole file — correct only while `theme` is the sole key — and
+  serializes its calls through a module-level queue, since the picker POSTs once
+  per `change` and unqueued writes race the same temp path and rename.
+- **The palettes and the page CSS are one set.** `PALETTE_KEYS` in
+  `src/theme.ts` is the exact property set every built-in must define — nothing
+  merges over a base — and `test/theme.test.ts` parses both `:root` blocks out
+  of `public/index.html` and asserts their keys equal `PALETTE_KEYS` (plus
+  `--mono`, the non-themeable font stack) *and* their values equal Dark Modern /
+  Light Modern. Those blocks are hand-copies for the first paint, so a custom
+  property or a colour tweak has to land on both sides or `npm test` fails.
 - **The review server is a trust boundary.** It binds `127.0.0.1` on a random
   port, and rejects — before routing, so a new route inherits both guards — any
   request whose `Host` is not loopback-on-our-port (DNS rebinding would

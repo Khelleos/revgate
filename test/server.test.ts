@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { request } from "node:http";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { startReviewServer, type ReviewContext, type ServerHandle } from "../src/server.js";
 import { buildDecision } from "../src/feedback.js";
 import { renderAnnotations } from "../src/output.js";
+import { BUILTIN_THEMES, PALETTE_KEYS, type ThemeListing } from "../src/theme.js";
 import { createRepo } from "./helpers/repo.js";
 import type { DiffFile, ReviewSubmission } from "../src/types.js";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const file = (p: string): DiffFile => ({
   oldPath: p,
@@ -186,6 +193,220 @@ test("GET /api/review: a plan review reports its title", async (t) => {
   const body = (await (await get(`${server.url}api/review`)).json()) as ReviewContext;
   assert.equal(body.mode, "plan");
   assert.equal(body.planTitle, "Add rate limiting");
+});
+
+// --- themes ----------------------------------------------------------------
+
+/**
+ * Point `$REVGATE_CONFIG_DIR` at a throwaway directory for one test.
+ *
+ * Without it these routes read and write the real `~/.revgate/config.json`, so
+ * running the suite would silently overwrite whatever theme the developer
+ * picked — and the assertions would depend on what was already saved there.
+ */
+async function themeConfigDir(
+  t: { after(fn: () => void | Promise<void>): void },
+  options: { unwritable?: boolean } = {},
+): Promise<string> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "revgate-server-theme-"));
+  let target = dir;
+  if (options.unwritable) {
+    // A file where a directory needs to be: mkdir cannot succeed, on any platform.
+    const blocker = path.join(dir, "blocker");
+    await writeFile(blocker, "not a directory", "utf8");
+    target = path.join(blocker, "revgate");
+  }
+  const saved = process.env.REVGATE_CONFIG_DIR;
+  process.env.REVGATE_CONFIG_DIR = target;
+  t.after(async () => {
+    if (saved === undefined) delete process.env.REVGATE_CONFIG_DIR;
+    else process.env.REVGATE_CONFIG_DIR = saved;
+    await rm(dir, { recursive: true, force: true });
+  });
+  return target;
+}
+
+/** Capture stderr for the body of one test, so a degraded path can be asserted on. */
+function captureStderr(t: { after(fn: () => void): void }): () => string {
+  const original = process.stderr.write.bind(process.stderr);
+  let captured = "";
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    captured += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  }) as typeof process.stderr.write;
+  t.after(() => {
+    process.stderr.write = original;
+  });
+  return () => captured;
+}
+
+test("GET /api/themes: every built-in palette arrives in one response", async (t) => {
+  // One response, not one per theme: the page applies a switch from what it
+  // already holds, so picking a theme costs no round trip and cannot half-fail.
+  await themeConfigDir(t);
+  const server = await serve(t);
+
+  const res = await get(`${server.url}api/themes`);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as ThemeListing;
+  assert.equal(body.selected, "system", "a fresh config dir means a fresh install");
+  assert.equal(body.themes.length, 5);
+  assert.deepEqual(
+    body.themes.map((theme) => theme.id),
+    BUILTIN_THEMES.map((theme) => theme.id),
+  );
+  for (const theme of body.themes) {
+    assert.ok(theme.type === "dark" || theme.type === "light", `${theme.id} has no usable type`);
+    // The full colour map has to survive JSON, or a switch leaves the page
+    // holding a theme it cannot actually paint.
+    assert.deepEqual(Object.keys(theme.colors).sort(), [...PALETTE_KEYS].sort(), theme.id);
+  }
+});
+
+test("POST /api/theme: the choice reaches disk and the next GET reports it", async (t) => {
+  // The whole point of the feature: the server binds a random port, so the
+  // browser is a new origin every run and only a file on disk can remember.
+  const dir = await themeConfigDir(t);
+  const server = await serve(t);
+
+  const res = await post(`${server.url}api/theme`, JSON.stringify({ id: "dracula" }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+
+  const onDisk = JSON.parse(await readFile(path.join(dir, "config.json"), "utf8")) as unknown;
+  assert.deepEqual(onDisk, { theme: "dracula" });
+
+  const listing = (await (await get(`${server.url}api/themes`)).json()) as ThemeListing;
+  assert.equal(listing.selected, "dracula");
+});
+
+test("POST /api/theme: system is a real id, not a 400", async (t) => {
+  // It is the default and a first-class member of the id set — a user who picks
+  // it back after trying a built-in must be able to save that.
+  const dir = await themeConfigDir(t);
+  const server = await serve(t);
+
+  await post(`${server.url}api/theme`, JSON.stringify({ id: "monokai" }));
+  const res = await post(`${server.url}api/theme`, JSON.stringify({ id: "system" }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+
+  assert.deepEqual(JSON.parse(await readFile(path.join(dir, "config.json"), "utf8")), {
+    theme: "system",
+  });
+  const listing = (await (await get(`${server.url}api/themes`)).json()) as ThemeListing;
+  assert.equal(listing.selected, "system");
+});
+
+test("POST /api/theme: an unknown id is a 400 and nothing is written", async (t) => {
+  // Saving one would not break the page — the read path falls back to `system`
+  // — which is exactly why it has to be refused here: the user would otherwise
+  // be handed a theme they never picked, with no error anywhere they can see.
+  const dir = await themeConfigDir(t);
+  const server = await serve(t);
+
+  for (const body of [
+    JSON.stringify({ id: "solarized-dark" }),
+    JSON.stringify({ id: "" }),
+    JSON.stringify({ id: 7 }),
+    JSON.stringify({}),
+    "null",
+  ]) {
+    const res = await post(`${server.url}api/theme`, body);
+    assert.equal(res.status, 400, `expected 400 for ${body}`);
+    assert.deepEqual(await res.json(), { error: "unknown theme" });
+  }
+  assert.deepEqual(await readdir(dir), [], "a refused id must not touch the config");
+});
+
+test("POST /api/theme: a write that cannot land is still a 200", async (t) => {
+  // Deliberate: the page has already repainted, so answering an error here
+  // would have it undo a change the user can plainly see. The failure goes to
+  // stderr and no further — a cosmetic subsystem may not fight the gate.
+  await themeConfigDir(t, { unwritable: true });
+  const stderr = captureStderr(t);
+  const server = await serve(t);
+
+  const res = await post(`${server.url}api/theme`, JSON.stringify({ id: "dracula" }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+  assert.match(stderr(), /could not save theme/);
+
+  // And the next load degrades to system rather than reporting the failure.
+  const listing = (await (await get(`${server.url}api/themes`)).json()) as ThemeListing;
+  assert.equal(listing.selected, "system");
+});
+
+test("POST /api/theme: malformed JSON is a 400", async (t) => {
+  const dir = await themeConfigDir(t);
+  const server = await serve(t);
+
+  const res = await post(`${server.url}api/theme`, "{not json");
+  assert.equal(res.status, 400);
+  assert.deepEqual(await res.json(), { error: "invalid JSON" });
+  assert.deepEqual(await readdir(dir), []);
+});
+
+test("POST /api/theme: a cross-origin write is rejected by the blanket guard", async (t) => {
+  // The route adds no guard of its own — it relies on the Origin check that
+  // covers every POST. If that check ever grows a per-route allow-list, this
+  // fails rather than leaving a page on any origin able to rewrite the config.
+  const dir = await themeConfigDir(t);
+  const server = await serve(t);
+
+  const res = await fetch(`${server.url}api/theme`, {
+    method: "POST",
+    headers: { origin: "https://evil.example" },
+    body: JSON.stringify({ id: "dracula" }),
+  });
+  assert.equal(res.status, 403);
+  assert.deepEqual(await res.json(), { error: "cross-origin request rejected" });
+  assert.deepEqual(await readdir(dir), []);
+});
+
+test("public/index.html: the picker is in the page and no localStorage theme code survives", async () => {
+  // Read the file, not a served response: the static handler streams public/
+  // verbatim, so a running server would only re-prove that the handler works.
+  const html = await readFile(path.join(repoRoot, "public", "index.html"), "utf8");
+
+  assert.match(html, /id="theme-slot"|id: "theme-slot"/, "the header has no slot for the picker");
+  assert.match(html, /id: "theme-picker"/, "no picker is built");
+  assert.match(html, /"\/api\/themes"/, "the page never asks for the themes");
+  assert.match(html, /"\/api\/theme"/, "a pick is never persisted");
+
+  // The random port makes every run a new origin, so a localStorage read here
+  // can only ever miss — and a leftover pre-paint write would fight the
+  // palette /api/themes applies.
+  assert.doesNotMatch(html, /localStorage/, "localStorage theme code is left in the page");
+  assert.doesNotMatch(html, /data-theme/, "the old data-theme switch is left in the page");
+
+  // `system` is the default, and the page resolves it against two ids written
+  // out by hand. Rename a built-in and resolveTheme returns null, applyTheme
+  // bails, and every system user silently keeps the compiled-in CSS default —
+  // including after an OS light/dark flip, which is meant to follow live.
+  for (const id of ["dark-modern", "light-modern"]) {
+    assert.match(html, new RegExp(`"${id}"`), `the page never resolves system to ${id}`);
+    assert.ok(
+      BUILTIN_THEMES.some((theme) => theme.id === id),
+      `public/index.html hard-codes ${id}, which is no longer a built-in`,
+    );
+  }
+});
+
+test("GET: /api/themes is behind the same Host guard as the diff", async (t) => {
+  // Method-agnostic and above the routing table, so a route added later cannot
+  // miss it. Asserted because the guard's placement is the only thing keeping a
+  // rebound page from reading this listener at all.
+  await themeConfigDir(t);
+  const server = await serve(t);
+  const port = Number(new URL(server.url).port);
+
+  const rejected = await rawGet(port, "/api/themes", `evil.example:${port}`);
+  assert.equal(rejected.status, 403);
+  assert.deepEqual(JSON.parse(rejected.body), { error: "unexpected host" });
+
+  const ok = await rawGet(port, "/api/themes", `127.0.0.1:${port}`);
+  assert.equal(ok.status, 200);
 });
 
 // --- POST /api/submit ------------------------------------------------------

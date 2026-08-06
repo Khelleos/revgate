@@ -5,6 +5,7 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { log, warn } from "./log.js";
 import { getStageStates, setStaged } from "./git.js";
+import { isKnownThemeId, listThemes, writeThemeConfig } from "./theme.js";
 import type { DiffFile, HookPayload, LineComment, ReviewSubmission, StageState } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -295,6 +296,46 @@ export async function startReviewServer(ctx: ReviewContext): Promise<ServerHandl
 
       if (pathname === "/api/review" && req.method === "GET") {
         json(res, 200, ctx);
+        return;
+      }
+
+      // Every palette in one response, not one fetch per theme: switching then
+      // costs nothing but a repaint, and a page that has already loaded can
+      // never end up half-themed because a second round trip failed.
+      if (pathname === "/api/themes" && req.method === "GET") {
+        json(res, 200, await listThemes());
+        return;
+      }
+
+      if (pathname === "/api/theme" && req.method === "POST") {
+        const raw = await readBody(req);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          json(res, 400, { error: "invalid JSON" });
+          return;
+        }
+        // Reading the field is kept out of the try: `null`, a bare string and an
+        // array are all valid JSON, and reaching for `.id` on them throws — which
+        // inside the catch would report the body as unparseable when the real
+        // answer is that it carries no theme.
+        const id = (parsed as { id?: unknown } | null)?.id;
+        // Set membership is the entire validation surface, and deliberately so:
+        // every palette is a literal compiled into the build, so the id is the
+        // only user-supplied value in the feature. Writing an unknown one would
+        // not break anything today — the read path falls back to `system` — but
+        // the user would silently get a theme they did not pick.
+        if (!isKnownThemeId(id)) {
+          json(res, 400, { error: "unknown theme" });
+          return;
+        }
+        // A write that fails is reported to stderr by writeThemeConfig and no
+        // further: the page has already applied the palette, and answering an
+        // error here would have it undo a change the user can plainly see. A
+        // cosmetic subsystem may never wedge — or visibly fight — the gate.
+        await writeThemeConfig(id);
+        json(res, 200, { ok: true });
         return;
       }
 
