@@ -1,21 +1,13 @@
-/**
- * Documentation drift guards.
- *
- * `test/skills.test.ts` keeps the SKILL.md files honest against `parseArgs`;
- * this does the same for the two documents a human reads — README.md and
- * agents.md. A flag that gets renamed in cli.ts and not in the README is a bug
- * report waiting to happen, and the README is also where the exit-code and
- * history contracts are promised.
- */
+// Documentation drift guards for the two documents a human reads — README.md
+// and agents.md. `test/skills.test.ts` does the same for the SKILL.md files.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { helpText, parseArgs } from "../src/cli.js";
+import { parseArgs } from "../src/cli/args.js";
+import { helpText } from "../src/cli/help.js";
 import { commandLines, expectedCommand, toArgv } from "./helpers/docs.js";
-
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+import { repoRoot, walk } from "./helpers/tree.js";
 
 async function doc(name: string): Promise<string> {
   return (await readFile(path.join(repoRoot, name), "utf8")).replace(/\r\n/g, "\n");
@@ -23,6 +15,27 @@ async function doc(name: string): Promise<string> {
 
 const readme = await doc("README.md");
 const agents = await doc("agents.md");
+
+/** The `src/` tree that the fenced block under `## Modules` documents, as repo-relative paths. */
+function documentedModules(guide: string): string[] {
+  const fence = /^## Modules$[\s\S]*?^```\n([\s\S]*?)^```/m.exec(guide);
+  assert.ok(fence, "agents.md has no fenced src/ tree under ## Modules");
+
+  const stack: string[] = [];
+  const paths: string[] = [];
+  for (const line of fence[1].split("\n")) {
+    if (!line.trim()) continue;
+    const depth = (line.length - line.trimStart().length) / 2;
+    const name = line.trim().split(/\s+/)[0];
+    if (name.endsWith("/")) {
+      stack[depth] = name.slice(0, -1);
+      stack.length = depth + 1;
+    } else if (name.endsWith(".ts")) {
+      paths.push([...stack.slice(0, depth), name].join("/"));
+    }
+  }
+  return paths.sort();
+}
 
 test("README: every documented revgate command parses as the command it documents", () => {
   const commands = commandLines(readme);
@@ -117,10 +130,10 @@ test("README: documents where the theme config lives", () => {
   }
   // `system` is the default and a real id, not the absence of a choice — a bare
   // /System/ would be satisfied by the word appearing anywhere in the README.
-  assert.match(readme, /\*\*System\*\*, which is a real choice/);
+  assert.match(readme, /\*\*System\*\*\.\s+It is a real choice/);
   // A missing config is every first run; documenting it as a warning would
   // promise a stderr line that readThemeConfig deliberately does not emit.
-  assert.match(readme, /A missing config is the normal first run\s+and is silent/);
+  assert.match(readme, /A missing config file is the normal first\s+run, and revgate is silent/);
 });
 
 test("README: credits revdiff and records what was deferred", () => {
@@ -137,24 +150,14 @@ test("README: credits revdiff and records what was deferred", () => {
   }
 });
 
-test("agents.md: lists every src module and the project commands", () => {
-  for (const mod of [
-    "index.ts",
-    "cli.ts",
-    "git.ts",
-    "diff.ts",
-    "plan.ts",
-    "copilot.ts",
-    "server.ts",
-    "feedback.ts",
-    "output.ts",
-    "history.ts",
-    "theme.ts",
-    "log.ts",
-    "types.ts",
-  ]) {
-    assert.ok(agents.includes(mod), `agents.md never mentions src/${mod}`);
-  }
+test("agents.md: its src/ tree matches the disk, and it lists the project commands", async () => {
+  // Derived rather than hard-coded: a new module under src/ has to appear in
+  // the tree, and a moved one cannot leave a stale line behind.
+  assert.deepEqual(
+    documentedModules(agents),
+    await walk(path.join(repoRoot, "src"), ".ts"),
+    "the src/ tree in agents.md has drifted from the files on disk",
+  );
   for (const cmd of ["npm test", "npm run build"]) {
     assert.ok(agents.includes(cmd), `agents.md never mentions ${cmd}`);
   }

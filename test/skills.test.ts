@@ -3,7 +3,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { parseArgs, type ParsedArgs } from "../src/cli.js";
+import { parseArgs, type ParsedArgs } from "../src/cli/args.js";
 import { commandLines, toArgv } from "./helpers/docs.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

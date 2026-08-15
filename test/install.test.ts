@@ -42,14 +42,11 @@ async function readJson(...segments: string[]): Promise<any> {
 test("install.ps1: installs the revgate bin globally, guarded by -SkipBuild", async () => {
   const script = await readFile(path.join(repoRoot, "install.ps1"), "utf8");
   // The skills shell out to `revgate`, so an install that leaves the bin off
-  // PATH ships skills that fail on first use — the installer must run the
-  // global install itself, not ask the user to.
+  // PATH ships skills that fail on first use.
   assert.match(script, /& npm install -g \./, "install.ps1 never runs `npm install -g .`");
-  // And -SkipBuild must bail out BEFORE that npm call: the behavioural tests
-  // below run this script for real with a sandboxed USERPROFILE, but
-  // `npm install -g` writes to the real npm prefix. This is a source-text
-  // check on purpose — a behavioural probe would have to trigger the very
-  // escape it guards against.
+  // -SkipBuild must bail out BEFORE that npm call: the tests below run this
+  // script for real, but `npm install -g` writes to the real npm prefix. A
+  // source-text check, since a probe would trigger the escape it guards.
   assert.match(
     script,
     /function Install-Bin[\s\S]*?if \(\$SkipBuild\)[\s\S]*?return[\s\S]*?& npm install -g \./,
@@ -58,19 +55,9 @@ test("install.ps1: installs the revgate bin globally, guarded by -SkipBuild", as
 });
 
 /**
- * Run install.ps1 in a sandbox: a temp %USERPROFILE% so no real hook or skill
- * directory is touched.
- *
- * Every caller passes -SkipBuild. Without it the installer runs `npm install`,
- * `npm run build`, and `npm install -g .` in this very checkout — the first
- * two would rewrite node_modules/ and dist/ underneath the ~200 other tests
- * that resolve tsx and spawn children out of them, and the global install
- * writes to the real npm prefix, which no sandboxed USERPROFILE contains.
- * -SkipBuild still asserts dist/index.js exists, which `npm test` guarantees
- * (`prepare` builds on install).
- *
- * Windows-only, because the installer is. Elsewhere the assertions are skipped
- * rather than faked — see the `t.skip` below.
+ * Run install.ps1 against a temp %USERPROFILE%, so no real hook or skill
+ * directory is touched. Every caller passes -SkipBuild: without it the installer
+ * rewrites node_modules/ and dist/ under the rest of the suite. Windows-only.
  */
 async function runInstaller(args: string[], home: string): Promise<{ code: number; stderr: string }> {
   const { spawn } = await import("node:child_process");
@@ -94,10 +81,8 @@ test("install.ps1: a plain run writes the global hook in the documented shape an
   const { mkdtemp, rm } = await import("node:fs/promises");
   const os = await import("node:os");
 
-  // This is THE install: no scope switches exist any more, so a plain run must
-  // deliver everything — the global plan hook AND the skills. A wrong hook
-  // target means the gate silently never fires; a broken copy loop or a wrong
-  // $SkillTarget would ship skills that Copilot cannot find.
+  // A plain run must deliver everything: the global plan hook AND the skills. A
+  // wrong hook target means the gate silently never fires.
   const home = await mkdtemp(path.join(os.tmpdir(), "revgate-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
 
@@ -111,26 +96,21 @@ test("install.ps1: a plain run writes the global hook in the documented shape an
   assert.deepEqual(Object.keys(written.hooks).sort(), ["preToolUse"]);
   const [hook] = written.hooks.preToolUse;
   assert.equal(hook.type, "command");
-  // -Timeout has to survive interpolation into the here-string as a number,
-  // not a quoted string: Copilot reads this as JSON.
+  // -Timeout must interpolate as a number, not a quoted string: this is JSON.
   assert.equal(hook.timeoutSec, 42);
   assert.match(hook.bash, /dist\/index\.js/);
   assert.equal(hook.bash.includes("\\"), false, "the hook path must use forward slashes");
   assert.match(hook.bash, /copilot-plan[;\s]/);
 
-  // The generated commands must survive this clone being moved or dist/ being
-  // cleaned. preToolUse fails CLOSED, so an unguarded `node <gone>` exits
-  // non-zero and denies EVERY tool call in every session until the user finds
-  // and hand-edits this file. The installer verifies dist/ at install time, but
-  // nothing keeps it there afterwards.
+  // The commands must survive this clone moving or dist/ being cleaned:
+  // preToolUse fails CLOSED, so an unguarded `node <gone>` denies every tool call.
   assert.match(hook.bash, /^if \[ -f "/, "bash: no existence guard");
   assert.match(hook.powershell, /^if \(Test-Path "/, "powershell: no existence guard");
   for (const shell of ["bash", "powershell"] as const) {
     assert.match(hook[shell], /\{"permissionDecision":"allow"\}/, `${shell}: missing the fail-open decision`);
   }
 
-  // Manual-first: the one install route ships the skills alongside the plan
-  // hook — and byte-identically, or an edited SKILL.md would drift on install.
+  // Byte-identically, or an edited SKILL.md would drift on install.
   for (const name of ["revgate-review", "revgate-plan"]) {
     const installed = path.join(home, ".copilot", "skills", name, "SKILL.md");
     assert.ok(
@@ -145,11 +125,9 @@ test("install.ps1: a clone path containing $ still yields a working hook", async
   const { mkdir, mkdtemp, rm, writeFile } = await import("node:fs/promises");
   const os = await import("node:os");
 
-  // `$` and `` ` `` are legal in Windows directory names, and both hook shells
-  // expand them inside double quotes at hook RUN time. Unescaped, the written
-  // path resolves to something else, the existence guard fails, and the gate
-  // silently allows everything — so the installer must escape per shell. Run
-  // the real script from a minimal clone whose path carries a `$`.
+  // `$` is legal in a Windows directory name and both hook shells expand it at
+  // RUN time, so an unescaped path resolves elsewhere and the gate silently
+  // allows everything. Run the real script from a clone whose path carries one.
   const base = await mkdtemp(path.join(os.tmpdir(), "revgate-src-"));
   t.after(() => rm(base, { recursive: true, force: true }));
   const src = path.join(base, "has$dollar");
@@ -206,8 +184,7 @@ test("install.ps1 -Uninstall: removes the hook and the skills; twice is a no-op"
   const { mkdtemp, rm } = await import("node:fs/promises");
   const os = await import("node:os");
 
-  // A broken -Uninstall leaves a preToolUse hook the user cannot remove —
-  // which denies every tool call until they hand-edit JSON.
+  // A broken -Uninstall leaves a hook that denies every tool call.
   const home = await mkdtemp(path.join(os.tmpdir(), "revgate-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
   const hookFile = path.join(home, ".copilot", "hooks", "revgate.json");
@@ -226,8 +203,7 @@ test("install.ps1 -Uninstall: removes the hook and the skills; twice is a no-op"
     "the skills the install wrote were left behind",
   );
 
-  // Uninstalling twice is a no-op, not an error: a user who is not sure whether
-  // it worked must be able to just run it again.
+  // Twice is a no-op: a user unsure whether it worked must be able to re-run it.
   const again = await runInstaller(["-Uninstall"], home);
   assert.equal(again.code, 0, `a second uninstall failed: ${again.stderr}`);
 }, { timeout: 180_000 });
@@ -237,8 +213,7 @@ test("install.ps1 -Uninstall: works even when the source tree is gone", async (t
   const { mkdir, mkdtemp, rm, writeFile } = await import("node:fs/promises");
   const os = await import("node:os");
 
-  // Someone uninstalling revgate may well have already moved the checkout, so
-  // uninstall must read the INSTALLED skills, not .github/skills.
+  // The checkout may already be gone, so uninstall reads the INSTALLED skills.
   const home = await mkdtemp(path.join(os.tmpdir(), "revgate-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
   const installed = path.join(home, ".copilot", "skills", "revgate-review");
@@ -253,15 +228,9 @@ test("install.ps1 -Uninstall: works even when the source tree is gone", async (t
 // --- installed artifacts must never be committed ---------------------------
 
 test("no machine-specific hook file is committed to the repo", async () => {
-  // The installer only writes the global hook these days, but a hand-copied
-  // hooks/revgate.json template can still land in .github/hooks with an
-  // absolute path to one machine. Committed, every other clone gets a
-  // preToolUse hook that cannot run — and preToolUse fails CLOSED, denying
-  // every tool call.
-  //
-  // Ask git, not the filesystem: a leftover working-tree copy from an old
-  // per-repo install would turn a filesystem check permanently red while never
-  // testing the word "committed" at all.
+  // A hand-copied .github/hooks/revgate.json carries an absolute path to one
+  // machine; committed, every other clone gets a hook that cannot run. Ask git,
+  // not the filesystem: a leftover working-tree copy is not a committed one.
   const { stdout } = await runGit(["ls-files", "--", ".github/hooks"]);
   assert.equal(
     stdout.trim(),
@@ -274,12 +243,8 @@ test("no machine-specific hook file is committed to the repo", async () => {
 });
 
 test("hooks/revgate.json: the hand-edited template wires the plan gate correctly", async () => {
-  // This template is edited by hand and only had a "no absolute paths" guard.
-  // If its preToolUse command lost the `copilot-plan` argument, every tool
-  // call would run as a bare
-  // `revgate`, which is a usage error — so the plan gate would silently never
-  // fire. And an agentStop entry reappearing here would re-introduce the
-  // removed diff gate.
+  // Hand-edited: without `copilot-plan` every tool call runs bare `revgate`, a
+  // usage error, so the gate silently never fires.
   const template = await readJson("hooks", "revgate.json");
   assert.equal(template.version, 1);
   assert.deepEqual(Object.keys(template.hooks).sort(), ["preToolUse"]);
@@ -294,8 +259,7 @@ test("hooks/revgate.json: the hand-edited template wires the plan gate correctly
     "preToolUse: timeoutSec must be a positive integer — a review is a human waiting",
   );
   for (const shell of ["bash", "powershell"] as const) {
-    // The call guards on the entry point existing, so `node …` is embedded
-    // rather than leading — see the fail-open assertion below.
+    // Guarded on the entry point existing, so `node` is embedded, not leading.
     assert.match(hook[shell], /\bnode "[^"]*" copilot-plan\b/, `preToolUse.${shell}: wrong command or subcommand`);
     assert.match(hook[shell], /dist[\\/]index\.js/, `preToolUse.${shell}: wrong entry point`);
   }
@@ -303,11 +267,8 @@ test("hooks/revgate.json: the hand-edited template wires the plan gate correctly
 
 test("hooks/revgate.json: the template fails open on a path that does not exist", async () => {
   const template = await readJson("hooks", "revgate.json");
-  // This template is edited by hand: whoever copies it substitutes their own
-  // clone path. preToolUse fails CLOSED on a non-zero exit, so a typo in that
-  // substitution would make `node` exit non-zero on every tool call and deny the
-  // whole session — with no hint that the path is the reason. The guard turns it
-  // into a dormant gate instead.
+  // Whoever copies this substitutes their own clone path, and preToolUse fails
+  // CLOSED: a typo would deny the whole session. The guard makes it dormant instead.
   const [hook] = template.hooks.preToolUse;
   assert.match(hook.bash, /^if \[ -f "/, "preToolUse bash: no existence guard on the entry point");
   assert.match(hook.powershell, /^if \(Test-Path "/, "preToolUse powershell: no existence guard");
@@ -317,8 +278,7 @@ test("hooks/revgate.json: the template fails open on a path that does not exist"
 });
 
 test("hooks/revgate.json: the committed template is machine-independent", async () => {
-  // The template carries $HOME placeholders a human edits; it may never carry a
-  // real absolute path, or every other clone inherits a hook that cannot run.
+  // $HOME placeholders only: a real absolute path breaks every other clone.
   const rel = "hooks/revgate.json";
   const text = await readFile(path.join(repoRoot, ...rel.split("/")), "utf8");
   JSON.parse(text); // must stay parseable

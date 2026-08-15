@@ -6,11 +6,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-/**
- * A throwaway git repository on disk. Used by the git/history tests that need
- * a real repo to run `git diff` against — nothing here touches the user's own
- * repo or global git config.
- */
+/** A throwaway git repo on disk; nothing here touches the user's own repo or config. */
 export interface TempRepo {
   /** Absolute path to the repository working tree. */
   dir: string;
@@ -24,22 +20,14 @@ export interface TempRepo {
   cleanup(): Promise<void>;
 }
 
-/**
- * Create a temp git repo. `files` (if given) are written and committed as the
- * initial commit, so the repo always has a resolvable HEAD unless it is empty.
- */
+/** Create a temp repo. Any `files` become the initial commit, so HEAD resolves. */
 export async function createRepo(files?: Record<string, string>): Promise<TempRepo> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "revgate-test-"));
 
   // Real isolation from the contributor's git config, not just local overrides.
-  // Both config paths point at files that are never created: git treats a
-  // missing config file as empty, which is portable in a way `os.devNull` is
-  // not. Without this, `~/.gitconfig` is read in full inside these temp repos —
-  // so a contributor with `diff.relative` or `diff.mnemonicPrefix` set would
-  // watch the git/index suites fail for reasons the tests do not explain, while
-  // CI (which has no global config) stayed green. That is also the class of bug
-  // HARDENED_CONFIG in src/git.ts defends against, and these tests are supposed
-  // to be able to prove it.
+  // Both paths name files that are never created, and git reads a missing config
+  // as empty. Without this a contributor with `diff.relative` set watches these
+  // suites fail while CI, which has no global config, stays green.
   const env = {
     ...process.env,
     GIT_CONFIG_GLOBAL: path.join(dir, ".no-global-gitconfig"),

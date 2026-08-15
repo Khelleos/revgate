@@ -1,18 +1,7 @@
-/**
- * Helpers for the documentation drift guards.
- *
- * Both `test/docs.test.ts` (README.md, agents.md) and `test/skills.test.ts`
- * (the SKILL.md files) pull `revgate …` command lines out of markdown and push
- * them through `parseArgs`. The extraction rules are identical, so they live
- * here — two copies would drift, and the guard that catches drift must not be
- * the thing that has it.
- */
+// Shared by `docs.test.ts` and `skills.test.ts`: the guard that catches doc
+// drift must not have any.
 
-/**
- * Every `revgate …` command a document shows: lines inside fenced code blocks,
- * plus inline code spans. Prose is ignored, so a sentence that merely opens with
- * the word "revgate" is never mistaken for a command.
- */
+/** Every documented `revgate` command: fenced code blocks and inline spans, never prose. */
 export function commandLines(body: string): string[] {
   const found: string[] = [];
 
@@ -31,16 +20,7 @@ export function commandLines(body: string): string[] {
   return found;
 }
 
-/**
- * Turn a documented command line into a concrete argv, in the form it is
- * documented — the command name included.
- *
- * Docs use placeholders the CLI would never see: `<file>` stands for a value,
- * `[…]` marks an optional group, `...` marks a repeatable flag, and a trailing
- * `# …` is a comment for the reader. Substitute rather than skip, so the *shape*
- * of every documented invocation — which subcommand, flag names, whether a flag
- * takes a value, how many positionals — is still checked.
- */
+/** Turn a documented command line into argv, substituting placeholders rather than skipping them. */
 export function toArgv(command: string): string[] {
   return command
     .replace(/\s+#.*$/, "")
@@ -51,14 +31,7 @@ export function toArgv(command: string): string[] {
     .map((t) => (t.startsWith("<") && t.endsWith(">") ? "placeholder" : t));
 }
 
-/**
- * Which command `parseArgs` must resolve a documented argv to, read off the doc
- * itself. Without this the check is vacuous: `revgate copilot-plan` re-parsed as
- * `review copilot-plan` is a valid review of a git ref named `copilot-plan`, so a
- * renamed or deleted subcommand would leave the docs stale on a green suite.
- * Anything that is not the plan hook must be a `review` invocation — there is no
- * other entry point left for a doc to mean.
- */
+/** Which command a documented argv must resolve to; `copilot-plan` also parses as a ref name. */
 export function expectedCommand(argv: string[]): "review" | "copilot-plan" {
   return argv[0] === "copilot-plan" ? "copilot-plan" : "review";
 }
