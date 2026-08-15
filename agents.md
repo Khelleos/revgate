@@ -206,12 +206,14 @@ then `uv run revgate review --no-open`.
   choice is `review_report`, each command body is in `cli/`, and `__main__.py`
   keeps only the dispatch and does not run on import.
 - **The skill tree is the source; the installed hook files are not.**
-  `.github/skills/` is the only skill tree, copied unchanged by `install.ps1`
+  `assets/skills/` is the only skill tree, copied unchanged by `install.ps1`
   into `%USERPROFILE%\.copilot\skills\`. The generated hook is written only to
   `%USERPROFILE%\.copilot\hooks\`, with an absolute path to *this* clone;
-  `.github/hooks/revgate.json` is no longer installer output and stays in
-  `.gitignore`, because a hand-made copy in the repository gives every other
-  clone a `preToolUse` hook that cannot run — and that hook fails closed.
+  `assets/hooks/revgate.json` is a reference template, never a hook any clone
+  runs as-is, because a copy carrying another machine's path gives every other
+  clone a `preToolUse` hook that cannot run — and that hook fails closed. Both
+  copies keep the existence check around the `preToolUse` command for the same
+  reason.
 - **`pyproject.toml` holds two invariants a refactor breaks in silence.**
   `[project.scripts] revgate` must stay `revgate.__main__:main`, because
   `install.ps1` resolves that console script and writes its absolute path into
