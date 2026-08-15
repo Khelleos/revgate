@@ -1,4 +1,4 @@
-# Revgate
+# revgate
 
 revgate is a local, GitHub-style review page for the work of a Copilot agent.
 You read the diff — or the plan — in a browser, write line comments, and give an
@@ -12,8 +12,9 @@ approve the plan before the work rather than the diff after it.
 
 ## Features
 
-- **A pull-request page for local work.** Side-by-side diff, per-line and
-  per-file comments, a summary, and an approve or request-changes verdict.
+- **A pull-request page for local work.** Unified diff with old and new line
+  numbers, per-line comments, a summary, and an approve or request-changes
+  verdict.
 - **Agent-readable output.** The verdict and every comment come back as
   structured markdown on stdout, or in a file, with exact `path:line` anchors.
 - **Automatic plan gate.** A Copilot `preToolUse` hook reviews the proposed plan
@@ -176,8 +177,8 @@ Extract this into a helper.
 ## src/git/exec.ts:40 (-)
 Why was this guard removed?
 
-## README.md
-This file needs a section on the new flag.
+## README.md:8 (+)
+This section needs a note on the new flag.
 ```
 
 - The leading section carries the verdict (`APPROVED` or `REQUEST CHANGES`) and
@@ -185,7 +186,8 @@ This file needs a section on the new flag.
 - Each `## ` line opens a record and names an exact location; everything up to
   the next `## ` line is that comment's body.
 - `## path:LINE (+)` is one line on the **new** side, `## path:START-END (+)` a
-  range, `(-)` the **old** side, and `## path` alone a file-level comment.
+  range, and `(-)` the **old** side. The page shows the same marker beside every
+  comment, so a record always reads the way the reviewer saw it.
 - Continuation lines are indented by one space so a body can never look like a
   record header. A first line starting with `#` is indented for the same reason.
 - `scope:` is a human-readable label, not a rerunnable command line. Path filters

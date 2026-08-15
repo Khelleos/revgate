@@ -155,7 +155,7 @@ def test_build_decision_request_changes_renders_the_full_block_prompt() -> None:
             "",
             "## Review verdict: REQUEST CHANGES",
             "",
-            "## Overall feedback",
+            "## Overall summary",
             "Looks risky.",
             "",
             "## Plan comments",
@@ -273,7 +273,7 @@ def test_an_empty_request_changes_falls_back_to_an_ask_the_human_prompt() -> Non
 def test_a_whitespace_only_summary_counts_as_empty() -> None:
     decision = build_decision(review(summary="   \n  "), FILES)
     reason = decision.reason or ""
-    assert "## Overall feedback" not in reason
+    assert "## Overall summary" not in reason
     assert "left no specific notes" in reason
 
 

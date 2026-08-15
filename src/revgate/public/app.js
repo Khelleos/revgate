@@ -20,6 +20,16 @@ const isPlan = () => state.ctx && state.ctx.mode === "plan";
 const commentKey = (c) => `${c.file}::${c.side}::${c.startLine}::${c.endLine}`;
 /** "12" for a single line, "12-16" for a range. */
 const rangeLabel = (a, b) => (a === b ? `${a}` : `${a}-${b}`);
+/**
+ * Where a comment points, written the way the report writes it: `L12-16 (+)` on
+ * the new side, `(-)` on the old. Without the marker two comments on line 40 —
+ * one on the removed line, one on the added one — read identically. A plan has
+ * a single side, so there the marker would say nothing.
+ */
+const locLabel = (c) => {
+  const range = `L${rangeLabel(c.startLine, c.endLine)}`;
+  return isPlan() ? range : `${range} ${c.side === "old" ? "(-)" : "(+)"}`;
+};
 
 /* ---- Lightweight, dependency-free syntax highlighting ------------------- *
  * Per-line, best-effort tokenizing. Multi-line constructs (block comments,
@@ -268,9 +278,14 @@ function render() {
     ? changed[0].hunks.reduce((s, h) => s + h.lines.length, 0)
     : 0;
 
+  const sessionId = ctx.payload.sessionId;
+  const meta = plan
+    ? ctx.planTitle
+    : sessionId && sessionId !== "cli" ? `session ${sessionId}` : null;
+
   app.append(el("header", {}, [
     el("span", { class: "title", text: "revgate" }),
-    el("span", { class: "meta", text: plan ? (ctx.planTitle || "Plan review") : `session ${ctx.payload.sessionId}` }),
+    meta ? el("span", { class: "meta", text: meta }) : null,
     !plan && ctx.branch ? el("span", { class: "badge", text: ctx.branch }) : null,
     !plan && ctx.scope ? el("span", { class: "badge", text: ctx.scope }) : null,
     el("span", { class: "spacer" }),
@@ -305,7 +320,7 @@ function render() {
     el("div", { class: "empty", text: "Select a file to view its diff." }),
   ]);
 
-  layout.append(aside, main, renderRemarksPanel());
+  layout.append(aside, main, renderCommentsPanel());
   app.append(layout, renderReviewBar());
   // A plan is a single document — show it immediately rather than making the user click.
   if (plan) selectFile(0);
@@ -618,7 +633,7 @@ function insertExisting(afterRow, file, startLine, endLine, side) {
   // scan the whole run of rendered rows rather than the contiguous prefix.
   // An OPEN comment box counts as part of that run: openCommentBox inserts its
   // editor row immediately after the anchor, ahead of every rendered row, so
-  // terminating on it would skip the cleanup entirely — deleting a remark from
+  // terminating on it would skip the cleanup entirely — deleting a comment from
   // the rail while a box is open is enough to hit that.
   let scan = cursor.nextSibling;
   while (scan && scan.dataset && (scan.dataset.existing || scan.dataset.editor)) {
@@ -630,7 +645,7 @@ function insertExisting(afterRow, file, startLine, endLine, side) {
     const row = el("tr", {});
     row.dataset.existing = marker;
     const td = el("td", { colspan: "3", class: "wide" });
-    const loc = el("span", { class: "loc", text: `L${rangeLabel(c.startLine, c.endLine)}` });
+    const loc = el("span", { class: "loc", text: locLabel(c) });
     td.append(el("div", { class: "existing" }, [
       el("div", { class: "body" }, [loc, document.createTextNode(" " + c.body)]),
       el("span", { class: "del", text: "delete", onclick: () => {
@@ -655,27 +670,27 @@ function updateBubbles() {
     b.className = n ? "cbubble" : "cbubble hidden";
     b.style.display = n ? "" : "none";
   });
-  renderRemarksList();
+  renderCommentsList();
 }
 
-/* ---- Right-rail remarks panel: every inline comment, across all files ---- */
-function renderRemarksPanel() {
-  return el("section", { class: "remarks", "aria-label": "All remarks" }, [
-    el("h3", { id: "remarks-title", text: "Remarks" }),
-    el("div", { id: "remarks-list" }),
+/* ---- Right-rail comments panel: every inline comment, across all files ---- */
+function renderCommentsPanel() {
+  return el("section", { class: "comments", "aria-label": "All comments" }, [
+    el("h3", { id: "comments-title", text: "Comments" }),
+    el("div", { id: "comments-list" }),
   ]);
 }
 
-/** Rebuild the remarks list from state.comments, grouped by file in diff order. */
-function renderRemarksList() {
-  const box = document.getElementById("remarks-list");
+/** Rebuild the comments list from state.comments, grouped by file in diff order. */
+function renderCommentsList() {
+  const box = document.getElementById("comments-list");
   if (!box) return; // panel not mounted (e.g. an empty review)
-  const title = document.getElementById("remarks-title");
-  if (title) title.textContent = state.comments.length ? `Remarks (${state.comments.length})` : "Remarks";
+  const title = document.getElementById("comments-title");
+  if (title) title.textContent = state.comments.length ? `Comments (${state.comments.length})` : "Comments";
 
   box.innerHTML = "";
   if (state.comments.length === 0) {
-    box.append(el("div", { class: "empty", text: "No remarks yet. Click + on a diff line to add one." }));
+    box.append(el("div", { class: "empty", text: "No comments yet. Click + on a diff line to add one." }));
     return;
   }
   for (const f of state.ctx.files) {
@@ -683,46 +698,46 @@ function renderRemarksList() {
       .filter((c) => c.file === f.path)
       .sort((a, b) => a.endLine - b.endLine || a.startLine - b.startLine);
     if (mine.length === 0) continue;
-    box.append(el("div", { class: "rfile", text: f.path, title: f.path }));
-    for (const c of mine) box.append(renderRemarkRow(c));
+    box.append(el("div", { class: "cfile", text: f.path, title: f.path }));
+    for (const c of mine) box.append(renderCommentRow(c));
   }
 }
 
-function renderRemarkRow(c) {
+function renderCommentRow(c) {
   const snippet = (c.body.split("\n")[0] || "").trim();
   return el("div", {
-    class: "remark", tabindex: "0", role: "button",
-    onclick: () => navigateToRemark(c),
-    onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigateToRemark(c); } },
+    class: "comment", tabindex: "0", role: "button",
+    onclick: () => navigateToComment(c),
+    onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigateToComment(c); } },
   }, [
-    el("span", { class: "rloc", text: `L${rangeLabel(c.startLine, c.endLine)}` }),
-    el("span", { class: "rbody", text: snippet, title: c.body }),
-    el("span", { class: "rdel", role: "button", "aria-label": "Delete remark", title: "Delete remark",
-      text: "✕", onclick: (e) => { e.stopPropagation(); deleteRemark(c); } }),
+    el("span", { class: "cloc", text: locLabel(c) }),
+    el("span", { class: "cbody", text: snippet, title: c.body }),
+    el("span", { class: "cdel", role: "button", "aria-label": "Delete comment", title: "Delete comment",
+      text: "✕", onclick: (e) => { e.stopPropagation(); deleteComment(c); } }),
   ]);
 }
 
-/** Remove a remark from state, refresh the panel, and drop its inline row if shown. */
-function deleteRemark(c) {
+/** Remove a comment from state, refresh the panel, and drop its inline row if shown. */
+function deleteComment(c) {
   state.comments = state.comments.filter((x) => x !== c);
   refreshRangeInPane(c);
   updateBubbles();
 }
 
-/** If the remark's file is the one on screen, re-render that range's inline comments. */
+/** If the comment's file is the one on screen, re-render that range's inline comments. */
 function refreshRangeInPane(c) {
   const pane = document.getElementById("diff-pane");
   if (!pane) return;
   // The pane holds one file; `data-lk` is only unique within it. Without this
-  // guard, deleting a remark on another file would splice that file's remaining
+  // guard, deleting a comment on another file would splice that file's remaining
   // comments into the diff on screen.
   if (state.ctx.files[state.selected]?.path !== c.file) return;
   const anchor = pane.querySelector(`tr.line[data-lk="${c.side}::${c.endLine}"]`);
   if (anchor) insertExisting(anchor, c.file, c.startLine, c.endLine, c.side);
 }
 
-/** Open the remark's file (if not already shown), scroll to its line, and flash it. */
-function navigateToRemark(c) {
+/** Open the comment's file (if not already shown), scroll to its line, and flash it. */
+function navigateToComment(c) {
   const index = state.ctx.files.findIndex((f) => f.path === c.file);
   if (index === -1) return;
   if (state.selected !== index) selectFile(index);
@@ -747,15 +762,15 @@ function renderReviewBar() {
   const plan = isPlan();
   const summary = el("textarea", { id: "summary",
     placeholder: plan
-      ? "Overall feedback — what should the agent change in this plan? (optional)"
-      : "Overall review summary — what should Copilot change or keep? (optional)" });
+      ? "Overall summary — what should the agent change in this plan? (optional)"
+      : "Overall summary — what should the agent change or keep? (optional)" });
 
   const submit = (decision) => async () => {
     const payload = { decision, summary: summary.value, comments: state.comments };
     if (decision === "request_changes" && !summary.value.trim() && state.comments.length === 0) {
       const q = plan
         ? "Request changes with no notes? The agent won't know what to revise."
-        : "Request changes with no notes? Copilot won't know what to change.";
+        : "Request changes with no notes? The agent won't know what to change.";
       if (!confirm(q)) return;
     }
     // The server rejects a malformed body (400) and a cross-origin POST (403),
@@ -782,9 +797,12 @@ function renderReviewBar() {
     summary,
     el("div", { class: "actions" }, [
       el("button", { class: "primary", text: plan ? "Approve plan" : "Approve",
-        title: plan ? "The agent proceeds with this plan" : "Copilot stops", onclick: submit("approve") }),
+        title: plan
+          ? "The agent proceeds with this plan"
+          : "The agent gets an APPROVED verdict and carries on",
+        onclick: submit("approve") }),
       el("button", { class: "warn", text: "Request changes",
-        title: plan ? "The agent revises the plan using your feedback" : "Copilot takes another turn on your feedback",
+        title: plan ? "The agent revises the plan using your feedback" : "The agent takes another turn on your feedback",
         onclick: submit("request_changes") }),
     ]),
   ]);
@@ -795,8 +813,8 @@ function showDone(decision) {
   app.innerHTML = "";
   const plan = isPlan();
   const msg = decision === "approve"
-    ? (plan ? "Plan approved. The agent will proceed." : "Approved. Copilot will stop here.")
-    : (plan ? "Feedback sent. The agent is revising the plan." : "Feedback sent. Copilot is taking another turn on your review.");
+    ? (plan ? "Plan approved. The agent will proceed." : "Approved. Your verdict goes back to the agent.")
+    : (plan ? "Feedback sent. The agent is revising the plan." : "Feedback sent. The agent is taking another turn on your review.");
   app.append(el("div", { class: "done" }, [
     el("h1", { text: "Review submitted ✓" }),
     el("p", { text: msg }),

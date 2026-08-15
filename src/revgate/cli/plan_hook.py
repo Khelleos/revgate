@@ -159,7 +159,7 @@ def _cwd() -> str:
 
 
 def gate_plan(payload: HookPayload, plan_text: str, options: CliOptions) -> ReviewOutcome:
-    """Open the plan review UI: approve -> allow, request-changes -> block. Never raises."""
+    """Open the plan review page: approve -> allow, request-changes -> block. Never raises."""
     files = plan_to_files(plan_text)
     title = plan_title(plan_text)
     ctx = ReviewContext(
@@ -173,7 +173,7 @@ def gate_plan(payload: HookPayload, plan_text: str, options: CliOptions) -> Revi
 
     log(f"session {payload.session_id} — reviewing proposed plan")
     server = start_review_server(ctx)
-    log(f"plan review UI at {server.url}{' — opening browser…' if options.open else ''}")
+    log(f"plan review page at {server.url}{' — opening browser…' if options.open else ''}")
     if options.open:
         open_browser(server.url)
 

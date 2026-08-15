@@ -58,18 +58,18 @@ header .spacer { flex: 1; }
 .themepicker:hover { border-color: var(--accent); }
 
 .layout { display: grid; grid-template-columns: 260px minmax(0, 1fr) 320px;
-  grid-template-areas: "tree diff remarks"; min-height: calc(100vh - 49px); }
+  grid-template-areas: "tree diff comments"; min-height: calc(100vh - 49px); }
 
-/* Below ~1100px the three columns crowd the diff, so drop the remarks rail to a
+/* Below ~1100px the three columns crowd the diff, so drop the comments rail to a
    full-width strip under the diff. Below 780px the file tree joins it on top. */
 @media (max-width: 1100px) {
   .layout { grid-template-columns: 260px minmax(0, 1fr);
-    grid-template-areas: "tree diff" "remarks remarks"; }
-  .remarks { position: static; height: auto; max-height: 30vh;
+    grid-template-areas: "tree diff" "comments comments"; }
+  .comments { position: static; height: auto; max-height: 30vh;
     border-left: none; border-top: 1px solid var(--border); }
 }
 @media (max-width: 780px) {
-  .layout { grid-template-columns: 1fr; grid-template-areas: "tree" "diff" "remarks"; }
+  .layout { grid-template-columns: 1fr; grid-template-areas: "tree" "diff" "comments"; }
   /* Keep file navigation reachable: static strip above the diffs, not hidden. */
   aside { position: static; height: auto; max-height: 30vh;
     border-right: none; border-bottom: 1px solid var(--border); }
@@ -77,26 +77,26 @@ header .spacer { flex: 1; }
 
 aside { grid-area: tree; border-right: 1px solid var(--border); background: var(--bg2);
   position: sticky; top: 49px; height: calc(100vh - 49px); overflow: auto; padding: 8px; }
-aside h3, .remarks h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+aside h3, .comments h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
   color: var(--muted); margin: 8px 8px 4px; }
 
-/* Right rail: every remark across all files, grouped by file. Clicking one
+/* Right rail: every comment across all files, grouped by file. Clicking one
    opens its file and scrolls to the commented line. */
-.remarks { grid-area: remarks; border-left: 1px solid var(--border); background: var(--bg2);
+.comments { grid-area: comments; border-left: 1px solid var(--border); background: var(--bg2);
   position: sticky; top: 49px; height: calc(100vh - 49px); overflow: auto; padding: 8px; }
-.remarks .empty { padding: 24px 12px; }
-.remarks .rfile { font-family: var(--mono); font-size: 11px; color: var(--muted);
+.comments .empty { padding: 24px 12px; }
+.comments .cfile { font-family: var(--mono); font-size: 11px; color: var(--muted);
   margin: 12px 8px 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.remark { display: flex; gap: 6px; align-items: baseline; padding: 6px 8px;
+.comment { display: flex; gap: 6px; align-items: baseline; padding: 6px 8px;
   border-radius: 6px; cursor: pointer; }
-.remark:hover, .remark:focus { background: var(--bg3); }
-.remark .rloc { font-family: var(--mono); font-size: 10px; color: var(--muted);
+.comment:hover, .comment:focus { background: var(--bg3); }
+.comment .cloc { font-family: var(--mono); font-size: 10px; color: var(--muted);
   background: var(--bg3); border-radius: 4px; padding: 0 5px; flex: none; }
-.remark:hover .rloc, .remark:focus .rloc { background: var(--bg2); }
-.remark .rbody { flex: 1; font-size: 12.5px; line-height: 1.4;
+.comment:hover .cloc, .comment:focus .cloc { background: var(--bg2); }
+.comment .cbody { flex: 1; font-size: 12.5px; line-height: 1.4;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.remark .rdel { color: var(--danger); font-size: 12px; flex: none; opacity: 0; cursor: pointer; }
-.remark:hover .rdel, .remark:focus-within .rdel { opacity: 1; }
+.comment .cdel { color: var(--danger); font-size: 12px; flex: none; opacity: 0; cursor: pointer; }
+.comment:hover .cdel, .comment:focus-within .cdel { opacity: 1; }
 .filerow, .folderrow { display: flex; align-items: center; gap: 6px; padding: 4px 8px;
   border-radius: 6px; cursor: pointer; font-size: 13px; }
 /* Selected file shares the exact highlight used on hover/focus. */
@@ -156,9 +156,9 @@ tr.line:hover .addbtn { display: flex; }
 .gutter { cursor: ns-resize; }
 tr.hunk td.gutter { cursor: default; }
 tr.line.selrange td.code, tr.line.selrange td.gutter { background: var(--sel); }
-/* Brief wash on the target line(s) when you jump there from the remarks panel. */
-@keyframes remarkflash { from { background: var(--sel); } to { background: transparent; } }
-tr.line.flash td.code, tr.line.flash td.gutter { background: var(--sel); animation: remarkflash 1.2s ease-out; }
+/* Brief wash on the target line(s) when you jump there from the comments panel. */
+@keyframes commentflash { from { background: var(--sel); } to { background: transparent; } }
+tr.line.flash td.code, tr.line.flash td.gutter { background: var(--sel); animation: commentflash 1.2s ease-out; }
 @media (prefers-reduced-motion: reduce) {
   tr.line.flash td.code, tr.line.flash td.gutter { animation: none; }
 }

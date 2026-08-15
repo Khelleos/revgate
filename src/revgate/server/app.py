@@ -1,4 +1,4 @@
-"""The review UI and its `/api/*` routes.
+"""The review page and its `/api/*` routes.
 
 Both guards run in `before_request`, so a route added later inherits them, and
 the frame headers go on in `after_request`, so a 404 and an error-handler
@@ -289,7 +289,7 @@ def create_app(ctx: ReviewContext, holder: PortHolder, gate: SubmissionGate) -> 
 
 
 def start_review_server(ctx: ReviewContext) -> ReviewHandle:
-    """Bind the review UI on a random loopback port and serve it until `close()`."""
+    """Bind the review page on a random loopback port and serve it until `close()`."""
     # Never `logging.basicConfig`: waitress would otherwise take over the root
     # logger, and its output would reach stdout.
     waitress_logger = logging.getLogger("waitress")

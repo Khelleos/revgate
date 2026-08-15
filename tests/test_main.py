@@ -524,7 +524,7 @@ def test_legacy_agent_stop_invocations_exit_2_with_a_migration_hint(
     """These command lines were the agentStop diff gate before it was removed.
 
     A stale hooks.json still running them must get a loud usage error — never a
-    review UI, and never a decision Copilot would read as a completed gate.
+    review page, and never a decision Copilot would read as a completed gate.
     """
     clean_repo.write("PLAN.md", "# Plan: ship it\n")
     payload = json.dumps({"sessionId": "abc", "cwd": str(clean_repo.dir), "stopReason": "end_turn"})

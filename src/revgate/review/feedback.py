@@ -86,7 +86,7 @@ def _render_prompt(review: ReviewSubmission, files: list[DiffFile]) -> str:
     ]
 
     if review.summary.strip():
-        out += ["## Overall feedback", review.summary.strip(), ""]
+        out += ["## Overall summary", review.summary.strip(), ""]
 
     if review.comments:
         out.append("## Plan comments")

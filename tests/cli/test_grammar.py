@@ -29,7 +29,7 @@ def test_no_args_is_bad_usage_not_a_hook() -> None:
     """There is no hook behind bare `revgate` any more.
 
     A stale hooks.json that still invokes it must get a loud exit-2
-    explanation, not a review UI.
+    explanation, not a review page.
     """
     parsed = parse_args([])
     assert parsed.command == "review"

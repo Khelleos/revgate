@@ -110,8 +110,8 @@ Extract this into a helper.
 ## src/git/exec.ts:40 (-)
 Why was this guard removed?
 
-## README.md
-This file needs a section on the new flag.
+## README.md:8 (+)
+This section needs a note on the new flag.
 ```
 
 How to read it:
@@ -131,8 +131,7 @@ How to read it:
   line too.
 - `## path:LINE (+)` is one line on the **new** side of the diff.
   `## path:START-END (+)` is a range. `(-)` is the **old** side, before the
-  change, thus the comment is about what the diff removed. `## path` with no line
-  number is a comment about the whole file.
+  change, thus the comment is about what the diff removed.
 - `untracked-scan: failed` or `dropped-paths: <n>` in the leading section means
   that the diff which the person reviewed was **incomplete**. revgate could not
   list the new files, or that many changed files carry a line break in their path

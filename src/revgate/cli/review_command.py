@@ -101,7 +101,7 @@ def run_review_command(options: CliOptions) -> int:
 
 
 def review_diff(payload: HookPayload, options: CliOptions) -> ReviewOutcome:
-    """Open the diff review UI and resolve to an outcome. Never raises."""
+    """Open the diff review page and resolve to an outcome. Never raises."""
     cwd = payload.cwd or str(Path.cwd())
     log(f"session {payload.session_id} — reviewing {describe_scope(options.scope)} in {cwd}")
 
@@ -189,7 +189,7 @@ def review_diff(payload: HookPayload, options: CliOptions) -> ReviewOutcome:
     )
 
     server = start_review_server(ctx)
-    log(f"review UI at {server.url}")
+    log(f"review page at {server.url}")
     log(
         f"{len(files)} file(s) changed — "
         f"{'opening browser…' if options.open else 'open it to review'}"

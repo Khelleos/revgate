@@ -72,7 +72,7 @@ def run(
     stdin: str | None = None,
     env: dict[str, str] | None = None,
 ) -> RunResult:
-    """Run to completion. Only for invocations that never open the review UI."""
+    """Run to completion. Only for invocations that never open the review page."""
     process = launch(args, cwd=cwd, env=env)
     try:
         stdout, stderr = process.communicate((stdin or "").encode("utf-8"), timeout=TIMEOUT)
