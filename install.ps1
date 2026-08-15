@@ -1,8 +1,8 @@
 <#
-  revgate installer (Windows / PowerShell) — build revgate, put the `revgate`
-  CLI on PATH, install the /revgate-review and /revgate-plan skills, and wire
-  the one automatic hook: the global preToolUse plan gate. Everything else
-  runs on demand.
+  revgate installer (Windows / PowerShell) — put the `revgate` CLI on PATH,
+  install the /revgate-review and /revgate-plan skills, and wire the one
+  automatic hook: the global preToolUse plan gate. Everything else runs on
+  demand.
 
     .\install.ps1                    # CLI + skills + global plan hook
     .\install.ps1 -Timeout 900      # same, with a shorter review timeout
@@ -12,16 +12,17 @@
 param(
   [int]$Timeout = 3600,
   [switch]$Uninstall,
-  [switch]$SkipBuild,
+  [switch]$SkipInstall,
   [switch]$Help
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Entry = Join-Path $ScriptDir "dist\index.js"
 $HookName = "revgate.json"
-$SkillSource = Join-Path $ScriptDir ".github\skills"
+$SkillSource = Join-Path $ScriptDir "assets\skills"
 $SkillTarget = Join-Path $env:USERPROFILE ".copilot\skills"
+# Where `uv tool install` puts a console script on Windows.
+$UvBinDir = Join-Path $env:USERPROFILE ".local\bin"
 
 function Show-Usage {
   Write-Host @"
@@ -29,16 +30,15 @@ revgate installer — manual-first: installs the /revgate-review and /revgate-pl
 skills, plus one automatic exception, the preToolUse plan gate.
 
 Usage:
-  .\install.ps1 [-Timeout <sec>] [-SkipBuild]
+  .\install.ps1 [-Timeout <sec>] [-SkipInstall]
   .\install.ps1 -Uninstall
   .\install.ps1 -Help
 
 Options:
   -Timeout <sec>   Seconds revgate may wait for your plan review (default 3600).
-  -SkipBuild       Wire the hook to the existing dist/ instead of running any
-                   npm step — install, build, and the global CLI install (CI,
-                   tests, repeat installs). The check that dist\index.js exists
-                   still applies.
+  -SkipInstall     Wire the hook to the revgate already on PATH instead of
+                   running uv tool install (tests, repeat installs). The check
+                   that the executable exists still applies.
   -Uninstall       Remove the global plan hook and the skills.
   -Help            Show this help.
 
@@ -52,77 +52,63 @@ function Get-HookTarget {
   return (Join-Path (Join-Path $env:USERPROFILE ".copilot\hooks") $HookName)
 }
 
-function Assert-Node {
-  $node = Get-Command node -ErrorAction SilentlyContinue
-  if (-not $node) {
-    Write-Error "Node.js is not on PATH. Install Node >= 18, then re-run."
-    exit 1
-  }
-  $major = [int](& node -p "process.versions.node.split('.')[0]")
-  if ($major -lt 18) {
-    Write-Error "Node $major detected; revgate needs Node >= 18."
-    exit 1
-  }
-}
-
-function Invoke-Build {
-  if ($SkipBuild) {
-    Write-Host "Skipping npm install / build (-SkipBuild)."
-  } else {
-    Write-Host "Installing dependencies…"
-    Push-Location $ScriptDir
-    try {
-      # $ErrorActionPreference does not apply to native commands, so check
-      # $LASTEXITCODE by hand. Test-Path alone is not enough: a stale dist/ from
-      # an earlier build passes it, and we would then wire a preToolUse hook —
-      # which fails closed — to code that no longer compiles.
-      & npm install --silent
-      if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed (exit $LASTEXITCODE)"; exit 1 }
-      Write-Host "Building…"
-      & npm run build --silent
-      if ($LASTEXITCODE -ne 0) { Write-Error "npm run build failed (exit $LASTEXITCODE)"; exit 1 }
-    } finally {
-      Pop-Location
-    }
-  }
-  # Outside the branch on purpose: -SkipBuild may skip the build, never this. A
-  # hook wired to a missing dist/index.js is a preToolUse hook that fails
-  # *closed*, denying every tool call.
-  if (-not (Test-Path $Entry)) {
-    Write-Error "no build at $Entry — run without -SkipBuild"
+function Assert-Uv {
+  # No Python check: `uv tool install` reads `requires-python` from
+  # pyproject.toml and downloads a managed CPython 3.14 when the machine has
+  # none. uv itself is the only prerequisite.
+  $uv = Get-Command uv -ErrorAction SilentlyContinue
+  if (-not $uv) {
+    Write-Error "uv is not on PATH. Install it from https://docs.astral.sh/uv/, then re-run."
     exit 1
   }
 }
 
 function Install-Bin {
   # The skills shell out to `revgate`, so the bin must resolve on PATH — and
-  # asking the user to run `npm install -g .` themselves is an extra step that
-  # gets skipped. npm's global bin directory is already on PATH from the Node
-  # install, so one global install from this clone is all it takes. `prepare`
-  # re-runs tsc during it, which is why this comes after Invoke-Build: the
-  # local node_modules it compiles with must already exist.
+  # asking the user to run `uv tool install` themselves is an extra step that
+  # gets skipped.
   #
-  # -SkipBuild skips this too, not just the build: the test suite runs this
-  # script against a sandboxed USERPROFILE, but `npm install -g` writes to the
-  # real npm prefix — it must never fire from a test.
-  if ($SkipBuild) {
-    Write-Host "Skipping the global CLI install (-SkipBuild)."
-    return
+  # -SkipInstall skips this: the installer may be run against a sandboxed
+  # USERPROFILE, and `uv tool install` writes to the real one.
+  if ($SkipInstall) {
+    Write-Host "Skipping the CLI install (-SkipInstall)."
+  } else {
+    Write-Host "Putting the ``revgate`` CLI on PATH (uv tool install)…"
+    Push-Location $ScriptDir
+    try {
+      # $ErrorActionPreference does not apply to native commands, so check
+      # $LASTEXITCODE by hand.
+      & uv tool install --force .
+      if ($LASTEXITCODE -ne 0) { Write-Error "uv tool install failed (exit $LASTEXITCODE)"; exit 1 }
+    } finally {
+      Pop-Location
+    }
   }
-  Write-Host "Putting the ``revgate`` CLI on PATH (npm install -g)…"
-  Push-Location $ScriptDir
-  try {
-    & npm install -g . --silent
-    if ($LASTEXITCODE -ne 0) { Write-Error "npm install -g failed (exit $LASTEXITCODE)"; exit 1 }
-  } finally {
-    Pop-Location
+
+  # uv puts the console script here, and a fresh install adds the directory to
+  # the *persisted* PATH — which this already-running session does not see. Put
+  # it on the session PATH so the guard below, and everything after it, resolves.
+  if (Test-Path $UvBinDir) {
+    if (($env:PATH -split ';') -notcontains $UvBinDir) {
+      $env:PATH = "$UvBinDir;$env:PATH"
+    }
   }
+
+  # Outside the branch on purpose: -SkipInstall may skip the install, never this.
+  # A hook wired to a missing executable is a preToolUse hook that fails
+  # *closed*, denying every tool call in every session.
+  $cmd = Get-Command revgate -ErrorAction SilentlyContinue
+  if (-not $cmd) {
+    Write-Error "the ``revgate`` executable was not found after the install — refusing to wire a hook that would deny every tool call. Check ``uv tool install --force .`` and that $UvBinDir is on PATH."
+    exit 1
+  }
+  return $cmd.Source
 }
 
 function Write-Hook([string]$target, [string]$entry) {
   $dir = Split-Path -Parent $target
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  # Forward slashes so `node` accepts the path from both PowerShell and Git Bash.
+  # Forward slashes so the path is accepted from both PowerShell and Git Bash.
   $entryFwd = $entry -replace '\\', '/'
   # `$` and `` ` `` are legal in Windows directory names, and both hook shells
   # expand them inside double quotes at hook RUN time — an unescaped `$` bends
@@ -131,6 +117,8 @@ function Write-Hook([string]$target, [string]$entry) {
   # written doubled because the value lands inside a JSON string.
   $entryBash = $entryFwd -replace '([$`])', '\\$1'
   $entryPs = $entryFwd -replace '([$`])', '`$1'
+  # The PowerShell branch needs the call operator: a quoted path on its own line
+  # is just a string literal, so the gate would print its own path and allow.
   $json = @"
 {
   "version": 1,
@@ -138,9 +126,9 @@ function Write-Hook([string]$target, [string]$entry) {
     "preToolUse": [
       {
         "type": "command",
-        "comment": "revgate: intercept exit_plan_mode and review the proposed plan before Copilot implements it. Approve -> the plan proceeds; request changes -> the agent revises. Other tools pass straight through. This is revgate's ONLY automatic hook - diff review runs on demand via /revgate-review or 'revgate review'. Timeout fails open, and so does a missing build: preToolUse fails CLOSED on a non-zero exit, so if this clone is moved or dist/ is cleaned the unguarded command would deny EVERY tool call in every session until the JSON is hand-edited.",
-        "bash": "if [ -f \"$entryBash\" ]; then node \"$entryBash\" copilot-plan; else echo '{\"permissionDecision\":\"allow\"}'; fi",
-        "powershell": "if (Test-Path \"$entryPs\") { node \"$entryPs\" copilot-plan } else { '{\"permissionDecision\":\"allow\"}' }",
+        "comment": "revgate: intercept exit_plan_mode and review the proposed plan before Copilot implements it. Approve -> the plan proceeds; request changes -> the agent revises. Other tools pass straight through. This is revgate's ONLY automatic hook - diff review runs on demand via /revgate-review or 'revgate review'. Timeout fails open, and so does a missing executable: preToolUse fails CLOSED on a non-zero exit, so if revgate is uninstalled the unguarded command would deny EVERY tool call in every session until the JSON is hand-edited.",
+        "bash": "if [ -x \"$entryBash\" ]; then \"$entryBash\" plan; else echo '{\"permissionDecision\":\"allow\"}'; fi",
+        "powershell": "if (Test-Path \"$entryPs\") { & \"$entryPs\" plan } else { '{\"permissionDecision\":\"allow\"}' }",
         "timeoutSec": $Timeout
       }
     ]
@@ -183,7 +171,7 @@ function Install-Skills {
     Write-Host "  OK  ``revgate`` resolves on PATH."
   } else {
     Write-Warning "``revgate`` is not on PATH — the skills will fail until it is."
-    Write-Host "  Fix it from this clone with: npm install -g .   (or: npm link)"
+    Write-Host "  Fix it from this clone with: uv tool install --force ."
   }
   Write-Host "  In Copilot CLI run /skills reload, then /revgate-review."
 }
@@ -191,7 +179,7 @@ function Install-Skills {
 function Uninstall-Skills {
   # Uninstall reads the INSTALLED skills, not the source tree: someone removing
   # revgate may well have moved or deleted this checkout, and Get-SkillNames
-  # hard-errors when .github\skills is gone — which would leave the installed
+  # hard-errors when assets\skills is gone — which would leave the installed
   # skills stranded with no way to remove them.
   $names = @()
   if (Test-Path $SkillTarget) {
@@ -218,19 +206,18 @@ function Invoke-Install {
   # One route: the CLI, the skills, and the global plan gate always install
   # together. The skills are precisely the thing that shells out to `revgate`,
   # so an install without the CLI would fail on first use.
-  Assert-Node
-  Invoke-Build
-  Install-Bin
+  Assert-Uv
+  $entry = Install-Bin
 
   $target = Get-HookTarget
-  $entryFwd = ($Entry -replace '\\', '/')
-  Write-Hook $target $Entry
+  $entryFwd = ($entry -replace '\\', '/')
+  Write-Hook $target $entry
 
   Write-Host ""
   Install-Skills
   Write-Host "OK  revgate installed."
   Write-Host "  Hook:  $target"
-  Write-Host "  Runs:  node `"$entryFwd`" copilot-plan"
+  Write-Host "  Runs:  & `"$entryFwd`" plan"
   Write-Host ""
   Write-Host "revgate is manual-first, with one automatic exception:"
   Write-Host "  * On demand - /revgate-review and /revgate-plan in Copilot CLI, or"
@@ -253,11 +240,11 @@ function Invoke-Uninstall {
     Write-Host "no revgate hook found at $target"
   }
   Uninstall-Skills
-  # The global CLI is left in place — this script must stay runnable from a
-  # deleted checkout, and npm owns that install anyway. Point at the command
-  # instead of running it.
+  # The CLI is left in place — this script must stay runnable from a deleted
+  # checkout, and uv owns that install anyway. Point at the command instead of
+  # running it.
   if (Get-Command revgate -ErrorAction SilentlyContinue) {
-    Write-Host "The ``revgate`` CLI is still on PATH; remove it with: npm uninstall -g revgate"
+    Write-Host "The ``revgate`` CLI is still on PATH; remove it with: uv tool uninstall revgate"
   }
 }
 

@@ -1,15 +1,13 @@
-node_modules/
+.venv/
+__pycache__/
+*.py[co]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+*.egg-info/
 dist/
+build/
 *.log
 .DS_Store
-
-# PowerShell drops Microsoft/Windows/PowerShell/ModuleAnalysisCache into the
-# working directory it was started in. It was committed once by accident; ignore
-# it so the next `git add -A` cannot bring it back.
-Microsoft/
-
-# The installer only writes the global hook, but a hand-copied hooks/revgate.json
-# template can still land here, pinned to an absolute path to *this* machine's
-# dist/index.js. Committing it would hand every other clone a preToolUse hook
-# that cannot run — and preToolUse fails closed.
-.github/hooks/

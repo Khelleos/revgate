@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "comment": "revgate: intercept exit_plan_mode and review the proposed plan before Copilot implements it. Other tools pass straight through. This is revgate's ONLY automatic hook — diff review runs on demand via /revgate-review or `revgate review`. Timeout fails open, and so does a wrong path: preToolUse fails CLOSED on a non-zero exit, so without the guard a typo in the path below would deny EVERY tool call in every session. Replace both copies of the path with the output of `uv tool dir --bin` (usually %USERPROFILE%\\.local\\bin\\revgate.exe) when you edit this. install.ps1 writes it for you.",
+        "bash": "if [ -x \"$HOME/.local/bin/revgate\" ]; then \"$HOME/.local/bin/revgate\" plan; else echo '{\"permissionDecision\":\"allow\"}'; fi",
+        "powershell": "if (Test-Path \"$env:USERPROFILE\\.local\\bin\\revgate.exe\") { & \"$env:USERPROFILE\\.local\\bin\\revgate.exe\" plan } else { '{\"permissionDecision\":\"allow\"}' }",
+        "timeoutSec": 3600
+      }
+    ]
+  }
+}

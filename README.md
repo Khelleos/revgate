@@ -1,63 +1,50 @@
-# revgate
+# Revgate
 
-revgate is a small local web page. On it you review the work of a Copilot agent,
-in the way that you review a GitHub pull request. You write line comments. You
-give an approve or request-changes verdict. revgate then hands your feedback
-straight back to the agent, as its next prompt.
+revgate is a local, GitHub-style review page for the work of a Copilot agent.
+You read the diff — or the plan — in a browser, write line comments, and give an
+approve or request-changes verdict. revgate hands that feedback straight back to
+the agent as its next prompt.
 
 revgate is **manual-first, with one automatic exception**. A review starts when
 you ask for one, or when the agent asks for one. Only the plan gate starts by
-itself. It runs before Copilot leaves plan mode and starts to write code. You
-then review the plan that Copilot proposes.
+itself: it runs before Copilot leaves plan mode and begins to write code, so you
+approve the plan before the work rather than the diff after it.
 
-## Two ways to run revgate
+## Features
 
-Both ways use the same page, the same review pipeline and the same history.
-
-| | Skill or CLI (the default) | Plan hook (the exception) |
-| --- | --- | --- |
-| How it starts | `/revgate-review` or `/revgate-plan` in Copilot CLI, or `revgate review` in a terminal | Copilot's `preToolUse` hook, through `revgate copilot-plan` |
-| When | Only when you ask | At each exit from plan mode |
-| Scope | Any refs, a range, `--staged`, path filters, or a plan file | The proposed plan |
-| Output | Markdown annotations on stdout, or in `--output <file>` | A permission decision as JSON on stdout |
-| Signal | Exit code `10` when revgate captured comments | `deny` or `allow` |
-| Install | `.\install.ps1` | the same `.\install.ps1` run wires it |
-
-The skill is the tool for "review what you just did, in `src/`". The agent runs
-it at a moment that it or you choose. It reads structured markdown back, and it
-acts on that markdown. The plan hook is the one checkpoint that stays automatic.
-A plan that you approve before the work is cheap. A wrong plan that the agent
-implements is not cheap. There is deliberately **no** automatic diff gate.
-Release 0.2.0 removed the `agentStop` hook that opened a review at each end of a
-turn, in favour of a review on demand.
+- **A pull-request page for local work.** Side-by-side diff, per-line and
+  per-file comments, a summary, and an approve or request-changes verdict.
+- **Agent-readable output.** The verdict and every comment come back as
+  structured markdown on stdout, or in a file, with exact `path:line` anchors.
+- **Automatic plan gate.** A Copilot `preToolUse` hook reviews the proposed plan
+  before `exit_plan_mode` runs. Approve allows the tool; request changes denies
+  it and returns your review as the reason.
+- **Two skills.** `/revgate-review` and `/revgate-plan` let the agent open a
+  review at a moment it or you choose.
+- **Flexible scopes.** The working tree, the index, a ref, a range, a merge-base
+  range, or a plan document — narrowed further with path include/exclude filters.
+- **Staging from the page.** Toggle a file staged or unstaged while you review
+  the working tree.
+- **Real exit codes.** Exit `10` when the review captured comments, so a script
+  or an agent can branch on it.
+- **Review history.** Every review that captured something is archived as
+  markdown, so it survives a hook timeout or a closed terminal.
+- **Five colour themes** plus a System option that follows the OS live.
+- **Private by construction.** The server binds a random port on `127.0.0.1`,
+  rejects any request whose `Host` is not that exact loopback address, and
+  accepts a POST only from its own origin. The page makes no outbound requests.
 
 ## Requirements
 
-- **Node.js 18 or later** on your PATH. Test it with `node --version`. The
-  installer builds from source, thus npm comes with Node. revgate has no runtime
-  dependencies.
-- **Git**, to clone this repository, and to let revgate read the diff of the
-  repository that you review.
-- **GitHub Copilot CLI** for the plan gate. Another surface that fires the
-  `preToolUse` hook also works, for example VS Code Copilot agent mode. The
-  skills need Copilot CLI. The JetBrains plugin is not known to support these
-  hooks. The `revgate review` command needs none of these, and any terminal is
-  sufficient.
-- **A web browser** for the review page. The server listens on `127.0.0.1` on a
-  random port. Open the URL that revgate prints, exactly as it prints it. The
-  server answers only a request whose `Host` is loopback on that exact port, and
-  it accepts a POST only from its own origin. Without these two rules, a page
-  that rebinds DNS to 127.0.0.1 can read the whole diff, and any open tab can
-  forge an approval. A proxy or a port-forward that changes the port gets a
-  `403 unexpected host`.
+| | |
+| --- | --- |
+| **uv** | On your PATH; check with `uv --version`. Install from <https://docs.astral.sh/uv/>. No separate Python needed — `uv tool install` reads the `requires-python` floor and downloads a managed CPython 3.14. The supported build is the **default-GIL** CPython, not free-threaded `3.14t`: Flask, Werkzeug and waitress are not verified against it. |
+| **Git** | To clone this repository, and to read the diff of the repository you review. |
+| **GitHub Copilot** | For the skills and the plan gate. Any Copilot surface that reads `~/.copilot` and fires the `preToolUse` hook. |
+| **A web browser** | For the review page. Open the URL exactly as revgate prints it: a proxy or port-forward that changes the port gets `403 unexpected host`. |
+| **Windows / PowerShell** | For `install.ps1`. The CLI itself is cross-platform. |
 
-## Install
-
-Clone the repository, then run the installer in PowerShell. The installer builds
-revgate. It puts the `revgate` CLI on your PATH. It installs the
-`/revgate-review` and `/revgate-plan` skills. It also wires the one automatic
-hook, the plan gate. You edit no paths by hand, and you run no separate npm
-command.
+## Installation
 
 ```powershell
 git clone <repo-url> revgate
@@ -65,167 +52,113 @@ cd revgate
 .\install.ps1
 ```
 
-There is one install route and no prompt. Each run installs the CLI, both
-skills, and the global plan gate at
-`%USERPROFILE%\.copilot\hooks\revgate.json`. Thus the gate covers each
-repository that you work in.
+One route, no prompts. Each run:
+
+1. Runs `uv tool install --force .`, putting the `revgate` CLI on your PATH.
+2. Copies `assets\skills\*` into `%USERPROFILE%\.copilot\skills\`, which makes
+   `/revgate-review` and `/revgate-plan` available.
+3. Writes the global plan gate to `%USERPROFILE%\.copilot\hooks\revgate.json`,
+   with the absolute path of the installed executable pinned into it.
+
+
+The installer refuses to write the hook when the executable is missing, because
+a `preToolUse` hook that cannot run fails **closed**.
 
 ```powershell
-.\install.ps1 -Timeout 1800        # plan review timeout in seconds (default 3600)
-.\install.ps1 -Help                # each installer switch
+.\install.ps1 -Timeout 1800   # plan review timeout in seconds (default 3600)
+.\install.ps1 -SkipInstall    # rewire the hook and skills, skip `uv tool install`
+.\install.ps1 -Uninstall      # remove the global hook and the skills
+.\install.ps1 -Help           # every installer switch
 ```
 
-Each install copies `.github\skills\*` into `%USERPROFILE%\.copilot\skills\`.
-This step makes `/revgate-review` and `/revgate-plan` available in Copilot CLI.
-Run `/skills reload` after the install. The skills call the `revgate` bin, thus
-each install also runs `npm install -g .` from this clone, to put that bin on
-your PATH. The plan hook pins the absolute `node dist/index.js` path, and it
-needs nothing on the PATH.
+> If PowerShell blocks the script, either `Unblock-File .\install.ps1` once, or
+> run `powershell -ExecutionPolicy Bypass -File .\install.ps1` for one session.
 
-> If PowerShell blocks the script, you have two options. Unblock it one time
-> with `Unblock-File .\install.ps1`. Or run it in a single session with
-> `powershell -ExecutionPolicy Bypass -File .\install.ps1`.
+### Uninstall
 
-### Upgrade
+`-Uninstall` removes the global hook and the skills; a second run is a no-op. uv
+owns the CLI, so remove that separately with `uv tool uninstall revgate`.
 
-The installer writes a *snapshot* of the hook config. Thus a change to the hook
-set does not reach an existing install until you run the installer again.
+## Usage
 
-```powershell
-git pull
-.\install.ps1                    # it rewrites the hook file, rebuilds dist/ and the global CLI, and refreshes the skills
-```
-
-**An upgrade from 0.1.x:** revgate removed the `agentStop` diff gate. A new
-installer run rewrites the hook file with only the `preToolUse` plan gate. Until
-you do this, the stale hook still calls bare `revgate` at each end of a turn.
-That command now exits 2 with a message that points back to this document, and
-it does not open a review. To see what you have now, run
-`Get-Content $env:USERPROFILE\.copilot\hooks\revgate.json`. The file must list
-`preToolUse` and nothing else. Add `-SkipBuild` to rewire an existing `dist/`.
-That switch skips the dependency install, `tsc`, and the global CLI install.
-
-## Verify
-
-```powershell
-node dist\index.js review --help              # each flag
-node dist\index.js review                     # a diff review against your working tree
-```
-
-The second command opens the review page directly. Use it to confirm that
-revgate works before you depend on the hook. A completely clean tree has nothing
-to review, thus change a file first. Add `--no-open` if you prefer to open the
-printed URL yourself.
-
-## `revgate review`
-
-This is the on-demand entry point. It is not a hook. It reads nothing from
-stdin. It writes markdown annotations to stdout, never hook JSON. And it uses
-real exit codes.
+### On demand — `revgate review`
 
 ```
 revgate review [<refs>] [options]
 ```
 
-### Scopes
+This is the on-demand entry point behind `/revgate-review` and `/revgate-plan`.
+It is not a hook: it reads nothing from stdin, writes markdown annotations to
+stdout, and uses real exit codes.
 
-The positional arguments are the same as in revdiff.
+The positional arguments name what to review:
 
-| Argument | What revgate reviews |
+| Argument | Scope |
 | --- | --- |
-| *(none)* | the working tree against `HEAD`, with the untracked files |
-| `<ref>` | `<ref>` against the working tree, for example `revgate review HEAD~3` |
-| `<a> <b>` | `<a>` against `<b>`, for example `revgate review main feature` |
-| `<a>..<b>` | the same as two refs, for example `revgate review main..feature` |
+| *(none)* | the working tree against `HEAD`, plus untracked files |
+| `<ref>` | `<ref>` against the working tree |
+| `<a> <b>` | `<a>` against `<b>` |
+| `<a>..<b>` | the same as two refs |
 | `<a>...<b>` | `<a>` against `<b>` from their merge base |
-| `--staged` | the index only; you cannot use it together with refs |
+| `--staged` | the index only; cannot be combined with refs |
 
-revgate adds untracked files to the working-tree scope only. A ref, a range and
-the staged scope never pick them up. revgate validates each ref with
-`git rev-parse` before that ref reaches `git diff`. Thus a typo is bad usage
-(exit 2), not a git crash.
+A positional argument is always a ref, never a path: `revgate review src` looks
+for a commit named `src` and exits 2. Use `-I src` to scope by path. Refs are
+validated with `git rev-parse` before they reach `git diff`, so a typo is bad
+usage rather than a git crash.
 
-revgate also caps untracked *content*, thus a `dist/` that nobody ignored, or a
-stray data dump, cannot stall the gate. The caps are 2 MB for one untracked
-file, and 8 MB or 300 files across one review. revgate still lists a file that
-is past a cap, but it shows that file unexpanded. The rendering is the same as
-for a binary file, and revgate writes a warning to stderr. revgate never elides
-a tracked change, and it drops nothing. A file that you cannot expand is still a
-file that you can see was added.
+`--include` narrows first, then `--exclude` removes from what is left. Both match
+a path prefix at a directory boundary — `-X src/generated` drops
+`src/generated/g.ts` but keeps `src/generated-old.ts` — and both match against
+paths **relative to the repository root**, unlike `git diff -- <pathspec>`. From
+`pkg/` you still write `-I pkg/lib`, not `-I lib`. If the filters remove every
+changed file, revgate prints `NOTHING IN SCOPE` and exits 2 rather than report an
+approval nobody gave.
 
-The per-file **Staged** toggle is available in the working-tree scope and the
-`--staged` scope only. The toggle applies to the working tree. Thus in a ref or
-range review it reports an index state that says nothing about the commits on
-the page, and a stage action from there adds content that is not in the reviewed
-diff.
+Untracked files join the working-tree scope only; a ref, a range and `--staged`
+never pick them up. Untracked *content* is capped — 2 MB per file, 8 MB or 300
+files per review — so a stray `dist/` cannot stall the gate. A file past a cap is
+still listed, just unexpanded, with a warning on stderr. Tracked changes are
+never elided.
 
-A path with an unresolved merge conflict shows as **Unmerged**, and its toggle
-is disabled. The API answers a stage request for such a path with 409. Its index
-entry holds the conflict stages, not a staged and unstaged pair. To unstage it
-drops those stages: the conflict markers then stay on disk, but git no longer
-calls the file conflicted, and the next commit records the markers as the
-resolution. Resolve the conflict in git first.
+The per-file **Staged** toggle appears in the working-tree and `--staged` scopes
+only, because it acts on the index and would otherwise report a state unrelated
+to the commits on the page. A path with an unresolved merge conflict shows as
+**Unmerged** with its toggle disabled, and the API answers a stage request for it
+with 409 — resolve the conflict in git first.
 
-### Options
+### Automatic — the plan gate
 
-| Flag | Meaning |
-| --- | --- |
-| `--staged` | Review the staged changes only |
-| `-I`, `--include <path>` | Review only the paths that start with `<path>`. Repeatable |
-| `-X`, `--exclude <path>` | Skip the paths that start with `<path>`. Repeatable |
-| `--plan [<file>]` | Review a plan document instead of a diff |
-| `-o`, `--output <file>` | Write the annotations to `<file>` instead of stdout. If revgate cannot write the file, it falls back to stdout and gives a warning, thus a captured verdict is never dropped |
-| `--exit-code-on-comments` | Exit `10` when the review captured comments or requested changes |
-| `--history-dir <dir>` | Save the reviews under `<dir>`. It beats `$REVGATE_HISTORY_DIR` |
-| `--no-history` | Do not archive this review |
-| `--no-open` | Do not open the browser automatically |
-| `-h`, `--help` | Show the usage text |
+`revgate plan` is the `preToolUse` hook a normal install wires up:
 
-`--staged`, `--no-open`, `--no-history`, `--exit-code-on-comments` and `-h` are
-switches, and they take no value. `--no-history=false` is a usage error
-(exit 2). It does not mean "keep the history". Omit the flag to get the default.
-To accept the value and then discard it inverts the intention of the caller in
-silence, and the primary caller is an agent.
+1. Copilot enters plan mode. The agent drafts a plan, then calls `exit_plan_mode` to
+   leave it.
+2. `preToolUse` fires *before* that tool runs. The hook has no matcher, so
+   `revgate plan` self-filters and passes every other tool straight through with
+   `permissionDecision: allow`.
+3. For `exit_plan_mode` it resolves the plan text and opens the review page. It
+   reads `~/.copilot/session-state/<sessionId>/plan.md` first (`$COPILOT_HOME`
+   overrides `~/.copilot`), then the inline plan in the hook payload
+   (`toolArgs.plan` or `tool_input.plan`). A payload naming no session prefers
+   its own inline plan, since the newest `plan.md` on disk may belong to another
+   session or repository.
+4. **Approve** returns `permissionDecision: allow` and the agent proceeds.
+   **Request changes** returns `deny` with your review as the reason, so the
+   agent revises the plan.
 
-A flag that *takes* a value rejects an empty one. `-o ""`, `-I ""` and
-`--history-dir ""` are usage errors (exit 2). They do not mean "no output file"
-or "no filter". A skill can put an unset shell variable into the command line,
-for example `-o "$OUT"` or `-I "$SCOPE"`. Without this rule, that skill gets
-different behaviour than it asked for, and it gets no warning.
+The gate **fails open**: if revgate cannot find plan text, or is interrupted, or
+errors, it allows the tool through rather than blocking the agent. It always
+exits 0 and speaks decision JSON, because Copilot fails a non-zero `preToolUse`
+hook closed.
 
-`--include` narrows first, then `--exclude` removes from what is left. This is
-the same composition that revdiff documents. Both flags match a path prefix, at
-a directory boundary: `-X src/generated` drops `src/generated/g.ts`, but it
-keeps `src/generated-old.ts`.
-
-revgate matches the prefixes against **paths that are relative to the repository
-root**. `git diff -- <pathspec>` matches against the current directory, but
-revgate does not. Thus from `pkg/` you still write `-I pkg/lib`, not `-I lib`.
-If the filters remove each changed file, revgate does not report an approval. It
-prints a `NOTHING IN SCOPE` report and exits `2`, because nobody looked at
-anything.
-
-A positional argument is always a ref, never a path. `revgate review src` looks
-for a commit with the name `src`, and it exits 2. Use `-I src` to scope the
-review by path.
-
-### Examples
-
-```bash
-revgate review                                    # each uncommitted change
-revgate review --staged                           # what you are about to commit
-revgate review HEAD~3                             # the last three commits and the working tree
-revgate review main..feature                      # a branch, as a pull request shows it
-revgate review main..feature --include src        # only the src/ part of it
-revgate review -I src -I public -X src/generated  # the filters compose
-revgate review --exit-code-on-comments            # exit 10 if there is work to do
-revgate review -o review.md main..feature         # write the annotations to a file
-```
+Use `revgate review --plan <file>` — the `/revgate-plan` skill — when you are not
+in plan mode at all, when the agent wrote a plan to a file as ordinary work, or
+when you want a second look at an approved plan. `--plan` is strict: an
+unreadable path, an empty file, and a bare `--plan` with no `$REVGATE_PLAN_FILE`
+all exit 2. It never falls back to a diff review, because exit 0 there reads as a
+sign-off on a plan nobody saw.
 
 ### Output format
-
-`revgate review` prints a leading section with the verdict. Then it prints one
-**record** for each comment.
 
 ```text
 # revgate review: REQUEST CHANGES
@@ -247,339 +180,212 @@ Why was this guard removed?
 This file needs a section on the new flag.
 ```
 
-- The leading section holds the verdict of the reviewer (`APPROVED` or
-  `REQUEST CHANGES`) and their summary. Thus a consumer knows the outcome
-  without a parse of the records.
-- Each `## ` line opens a record and names an exact location. Everything below
-  it, up to the next `## ` line, is the body of that comment.
-- `## path:LINE (+)` is one line on the **new** side. `## path:START-END (+)` is
-  a range. `(-)` is the **old** side, before the change. `## path` alone is a
-  file-level comment.
-- Each continuation line in a body is indented by one space, thus a body can
-  never look like a record header. The first line of a body is flush left. There
-  is one exception: a first line that starts with `#` would open a bogus record,
-  thus revgate indents that line too.
-- `scope:` is a label for a person to read. It is not a command line that you
-  can run again. Its values are `working tree vs HEAD`, `staged changes`,
-  `HEAD~3 vs working tree`, or `main..feature`. revgate appends
-  `[+<include> -<exclude>]` when you applied path filters.
-- A plan review adds a `mode: plan` line to the leading section, and it writes
-  **no** `scope:` line, because there is no diff behind it. Its records point
-  into the plan document. The synthetic file always has the name `Plan`, thus
-  each header reads `## Plan:<line> (+)`.
-- Two more lines in the leading section mean that the review was **incomplete**.
-  They appear on an ordinary `APPROVED` or `REQUEST CHANGES` report as readily
-  as on the exit-2 reports below. `untracked-scan: failed` means that revgate
-  could not list the new files, thus it reviewed none of them.
-  `dropped-paths: <n>` means that this many changed files carry a line break in
-  their path, and revgate rendered none of them. Act on the records. Then say
-  that the review did not cover everything.
-
-### Exit codes
-
-| Code | Meaning |
-| --- | --- |
-| `0` | The review completed. The reviewer approved it, or there was nothing to review, or revgate captured comments on a run *without* `--exit-code-on-comments` |
-| `10` | revgate captured comments. This code needs `--exit-code-on-comments` |
-| `1` | An unexpected error, or the review stopped before the reviewer submitted a verdict |
-| `2` | Bad usage. The causes are: an unknown flag; a mistyped subcommand; a value on a valueless switch; a ref that does not resolve; a scope flag alongside `--plan`; a `--plan` with no plan text behind it; `-I` or `-X` filters that removed each changed file; a working directory that is not a git repository; or an untracked-file scan that failed |
-
-Without `--exit-code-on-comments`, **each** completed review exits `0`, whatever
-the verdict. Thus pass the flag, or parse the `# revgate review:` line. Do not
-read `0` as "approved".
-
-`--plan` is strict about the plan text. A path that revgate cannot read, a file
-that exists but is empty, and a bare `--plan` with no `$REVGATE_PLAN_FILE` all
-exit 2. `revgate review --plan` never falls back to a diff review in silence,
-because exit 0 there reads as a sign-off on a plan that nobody saw.
-
-An interrupted review reports `# revgate review: NO REVIEW CAPTURED` and exits
-1. It does not report `APPROVED` and 0. Nobody approved anything, and an agent
-must not read our own failure as a sign-off by a person. A run outside a
-repository reports the same banner and exits 2, for the same reason. It is a
-wrong directory, not an approval.
-
-If the scan for untracked files fails, each new file is missing from the diff.
-Many turns produce new files only, and for such a turn the result is an empty
-diff that otherwise reads as "there is nothing to review". revgate reports
-`# revgate review: SCAN FAILED` with an `untracked-scan: failed` line instead,
-and it exits `2`. It writes git's reason to stderr. Unlike the other exit-2
-causes, this one is an environment failure rather than a bad command line, thus
-a second run is reasonable. If revgate did review tracked files, the verdict of
-the person stands, the same `untracked-scan: failed` line rides along on the
-report, and the review page carries a banner that says that new files are
-missing. Thus neither the reviewer nor the report claims to cover the whole
-turn.
-
-revgate never renders a changed file whose path contains a line break, because
-such a path splices forged `## path:line` records into the annotation output. If
-that leaves nothing to review, the same rule applies: revgate reports
-`# revgate review: PATHS DROPPED` with a `dropped-paths:` count and exits `2`,
-rather than approves a diff that those files never reached. If revgate did
-review other files, the verdict stands, and the count rides along as a
-`dropped-paths:` header line. Thus the report never claims to cover more than it
-does.
-
-Anything that is not `revgate review …` or `revgate copilot-plan` is bad usage,
-exit 2. This covers a mistyped subcommand, thus a typo such as "reviw" does not
-quietly review a git ref of that name. It also covers review flags with the
-subcommand dropped, and bare `revgate`. Bare `revgate` was the removed
-`agentStop` diff gate. It now prints a pointer to a new installer run, and it
-does not open a review. A typo must never be able to forge a clean review, and a
-stale hook must fail loudly rather than gate in silence.
-
-The hook path is deliberately different. `copilot-plan` always exits 0 and
-speaks decision JSON, because Copilot fails a `preToolUse` hook **closed** on a
-non-zero exit.
+- The leading section carries the verdict (`APPROVED` or `REQUEST CHANGES`) and
+  the reviewer's summary, so a consumer knows the outcome without parsing records.
+- Each `## ` line opens a record and names an exact location; everything up to
+  the next `## ` line is that comment's body.
+- `## path:LINE (+)` is one line on the **new** side, `## path:START-END (+)` a
+  range, `(-)` the **old** side, and `## path` alone a file-level comment.
+- Continuation lines are indented by one space so a body can never look like a
+  record header. A first line starting with `#` is indented for the same reason.
+- `scope:` is a human-readable label, not a rerunnable command line. Path filters
+  append `[+<include> -<exclude>]`.
+- A plan review adds `mode: plan` and omits `scope:`; its records point into the
+  plan document, whose synthetic filename is always `Plan`.
+- `untracked-scan: failed` or `dropped-paths: <n>` in the leading section means
+  the review was **incomplete** — act on the records, then say the review did not
+  cover everything.
 
 ### Review history
 
-revgate archives each review that captured something — a comment, or a
-request-changes verdict — as markdown. It does this on both paths, the skill and
-`copilot-plan`:
+Every review that captured something — a comment, or a request-changes verdict —
+is archived as markdown on both the skill and the `plan` path:
 
 ```
 <historyDir>/<repo-name>/<timestamp>.md
 ```
 
 `<historyDir>` is `--history-dir`, else `$REVGATE_HISTORY_DIR`, else
-`~/.revgate/history`. `<repo-name>` is the basename of the git toplevel, and it
-is `no-repo` outside a repository. The file starts with YAML frontmatter: date,
-repo, mode, session, scope and branch. Then come the same annotation records as
-above. Thus a review survives a hook timeout, a closed terminal, or an agent
-that ignored it.
+`~/.revgate/history`. `<repo-name>` is the basename of the git toplevel, or
+`no-repo` outside a repository. The file opens with YAML frontmatter — date,
+repo, mode, session, scope, branch — followed by the same annotation records.
 
-revgate does not archive an approval that has no comments. A history failure
-never fails a review: revgate warns to stderr and continues, thus a read-only
-home directory cannot wedge a gate. Use `--no-history` to opt out for one run.
+An approval with no comments is not archived. A history failure never fails a
+review: revgate warns on stderr and continues, so a read-only home directory
+cannot wedge a gate. `--no-history` opts out for one run.
 
 ### Themes
 
-The review page ships five built-in colour themes. You pick one from the
-dropdown in its header.
+The page ships five built-in palettes, picked from the dropdown in its header:
+**Dark Modern** (default dark), **Light Modern** (default light), **Monokai**,
+**Solarized Light** and **Dracula**. The default selection is **System**, which
+follows `prefers-color-scheme` and re-resolves live — flip your OS theme
+mid-review and the page follows without a reload.
 
-| Theme | Kind |
-| --- | --- |
-| Dark Modern | the default dark palette |
-| Light Modern | the default light palette |
-| Monokai | dark |
-| Solarized Light | light |
-| Dracula | dark |
-
-The default is **System**. It is a real choice, and not the absence of one. It
-follows the OS through `prefers-color-scheme`, and it resolves to Dark Modern or
-to Light Modern. It also resolves again while the page is open: flip your OS
-between light and dark in the middle of a review, and the page follows without a
-reload.
-
-revgate saves your pick server-side, in:
-
-```
-~/.revgate/config.json
-```
+Your pick is saved server-side in `~/.revgate/config.json`:
 
 ```json
 { "theme": "dracula" }
 ```
 
-The pick has to live on disk rather than in the browser. The review server binds
-a random port, thus each run is a distinct origin with its own empty
-`localStorage`. A store in the browser forgets the choice the moment the review
-closes, every time.
+It has to live on disk: the random port makes every run a distinct browser
+origin with its own empty `localStorage`, so a browser-side store would forget
+the choice each time.
 
-`$REVGATE_CONFIG_DIR` overrides **the directory that holds `config.json`**, and
-the file inside it always has that name. This shape is deliberately not the same
-as `$REVGATE_HISTORY_DIR`, which names the history directory *itself*:
+Theme handling never fails a review. A missing config is the normal first run and
+passes silently. An unreadable config, a malformed one, an unknown theme id, or
+an unwritable home directory falls back to `system`, and the last three warn on
+stderr. A failed save is reported on stderr only, because an error response would
+make the page undo a change you can plainly see. If the themes cannot load at
+all, the page renders without the picker.
 
-| Variable | What it names | The resulting path |
+## Options
+
+| Flag | Meaning |
+| --- | --- |
+| `--staged` | Review the staged changes only |
+| `-I`, `--include <path>` | Review only paths starting with `<path>`. Repeatable |
+| `-X`, `--exclude <path>` | Skip paths starting with `<path>`. Repeatable |
+| `--plan [<file>]` | Review a plan document instead of a diff |
+| `-o`, `--output <file>` | Write annotations to `<file>` instead of stdout. On a write failure revgate falls back to stdout with a warning, so a captured verdict is never dropped |
+| `--exit-code-on-comments` | Exit `10` when the review captured comments or requested changes |
+| `--history-dir <dir>` | Save reviews under `<dir>`. Beats `$REVGATE_HISTORY_DIR` |
+| `--no-history` | Do not archive this review |
+| `--no-open` | Do not open the browser automatically |
+| `-h`, `--help` | Show the usage text |
+
+`--staged`, `--no-open`, `--no-history`, `--exit-code-on-comments` and `-h` are
+switches. `--no-history=false` is a usage error (exit 2), not "keep the history":
+accepting a value and discarding it inverts the caller's intention in silence,
+and the primary caller is an agent. Omit the flag to get the default.
+
+A flag that *takes* a value rejects an empty one, so `-o ""`, `-I ""` and
+`--history-dir ""` are usage errors too. A skill can easily interpolate an unset
+shell variable — `-o "$OUT"` — and must not silently get behaviour it never asked
+for.
+
+### Environment variables
+
+| Variable | What it names | Resulting path |
 | --- | --- | --- |
-| `$REVGATE_CONFIG_DIR` | the directory that holds `config.json` | `<dir>/config.json` |
+| `$REVGATE_CONFIG_DIR` | the directory holding `config.json` | `<dir>/config.json` |
 | `$REVGATE_HISTORY_DIR` | the history directory itself | `<dir>/<repo>/<timestamp>.md` |
+| `$REVGATE_PLAN_FILE` | the plan file a bare `--plan` reads | — |
+| `$COPILOT_HOME` | Copilot's home, in place of `~/.copilot` | `<dir>/session-state/…` |
 
-Thus the defaults are `~/.revgate` and `~/.revgate/history`. Do not give
-`$REVGATE_CONFIG_DIR` a path with the shape of the history path.
+The first two deliberately have different shapes; the defaults are `~/.revgate`
+and `~/.revgate/history`. Do not give `$REVGATE_CONFIG_DIR` a history-shaped path.
 
-Theme handling never fails a review. A missing config file is the normal first
-run, and revgate is silent about it. Four conditions make revgate fall back to
-`system`: a config that it cannot read, a malformed config, a saved id that this
-version does not know, and a home directory that it cannot write. The last three
-also warn to stderr. A save is best-effort in the same spirit: revgate reports a
-failed write to stderr only, because an error answer makes the page undo a
-change that you can plainly see. If the page cannot load the themes at all, it
-renders without the picker rather than not at all. A cosmetic subsystem must not
-be able to wedge a gate.
+### Exit codes
 
-revgate ships the five built-in themes only. The "Design notes" section says why
-user-authored theme files were deferred.
+| Code | Meaning |
+| --- | --- |
+| `0` | The review completed: approved, or nothing to review, or comments captured *without* `--exit-code-on-comments` |
+| `10` | Comments were captured. Requires `--exit-code-on-comments` |
+| `1` | An unexpected error, or the review stopped before a verdict was submitted |
+| `2` | Bad usage: an unknown flag, a mistyped subcommand, a value on a valueless switch, a ref that does not resolve, a scope flag alongside `--plan`, a `--plan` with no plan text behind it, filters that removed every changed file, a working directory that is not a git repository, or a failed untracked-file scan |
 
-## Plan review
+Without `--exit-code-on-comments`, **every** completed review exits `0` whatever
+the verdict. Pass the flag, or parse the `# revgate review:` line. Do not read
+`0` as "approved".
 
-revgate can also gate the agent *before* it writes code. It then reviews the
-**plan** that the agent proposes, rather than the resulting diff. Approve the
-plan, and the agent proceeds with it. Request changes, and your feedback becomes
-the next prompt of the agent, thus the agent revises the plan first.
+Failure banners are deliberately distinct from approval:
 
-There are two ways in, and they match the two ways to run revgate:
+- An interrupted review reports `NO REVIEW CAPTURED` and exits 1. A run outside a
+  repository reports the same banner and exits 2 — that is a wrong directory, not
+  an approval.
+- A failed untracked scan reports `SCAN FAILED` with `untracked-scan: failed` and
+  exits 2, writing git's reason to stderr. Many turns produce only new files, and
+  such a turn would otherwise look like an empty diff. This one is an environment
+  failure rather than a bad command line, so a retry is reasonable. If tracked
+  files *were* reviewed, the reviewer's verdict stands, the header line rides
+  along, and the page carries a banner saying new files are missing.
+- A changed file whose path contains a line break is never rendered, because such
+  a path can splice forged `## path:line` records into the output. If that leaves
+  nothing, revgate reports `PATHS DROPPED` with a `dropped-paths:` count and exits
+  2; otherwise the verdict stands and the count rides along in the header.
 
-- **Automatic** — Copilot's `preToolUse` hook, through `revgate copilot-plan`.
-  This is the one automatic gate of revgate, and a normal install wires it.
-- **On demand** — `revgate review --plan <file>`, which is the `/revgate-plan`
-  skill. Use it when you are not in Copilot plan mode at all, when the agent
-  wrote the plan to a file as ordinary work, or when you want a second look at
-  an approved plan.
+Anything that is not `revgate review …` or `revgate plan` is bad usage,
+exit 2 — including a mistyped subcommand, review flags with the subcommand
+dropped, and bare `revgate`. A typo must never be able to forge a clean review,
+and a stale hook must fail loudly rather than gate in silence.
 
-How the hook works:
-
-1. In Copilot CLI, `Shift+Tab` enters plan mode. The agent drafts a plan, then
-   it calls the `exit_plan_mode` tool to leave plan mode.
-2. `preToolUse` fires *before* that tool runs. The hook has no matcher and it
-   fires for every tool, thus `revgate copilot-plan` self-filters: it passes any
-   other tool straight through, with `permissionDecision: allow`.
-3. For `exit_plan_mode`, revgate resolves the plan text and opens the review
-   page. It reads `~/.copilot/session-state/<sessionId>/plan.md` first, because
-   Copilot writes the plan there (`$COPILOT_HOME` overrides `~/.copilot`).
-   Otherwise it reads the plan from the hook payload (`toolArgs.plan` or
-   `tool_input.plan`). A payload that names no session prefers its own inline
-   plan, because without a session id the newest `plan.md` on disk can belong to
-   a different session or a different repository. Only a payload that carries
-   neither a session id nor an inline plan falls back to that cross-session
-   scan.
-4. **Approve** gives `permissionDecision: allow`, the tool then runs, and the
-   agent proceeds. **Request changes** gives `permissionDecision: deny`, and
-   revgate hands your review back as the reason, thus the agent revises the
-   plan.
-
-The plan hook **fails open**: if revgate cannot find plan text, or is
-interrupted, or errors, it allows the tool through rather than blocks the agent.
-
-The review page, the line comments and the approve or request-changes verdict
-are identical to a diff review. Each plan line takes a comment, and revgate
-quotes your notes back to the agent.
-
-`revgate review --plan <file>` reviews a plan file and prints annotations, which
-is what the skill needs. A bare `--plan` with the `REVGATE_PLAN_FILE` variable
-set does the same. The hook needs no file at all: it resolves the plan from
-Copilot's own session state, as above.
-
-## Uninstall
-
-```powershell
-.\install.ps1 -Uninstall           # it removes the global hook AND the skills
-```
-
-`-Uninstall` removes what the install wrote: the global hook and the skills. A
-second run is a no-op. npm owns the globally installed CLI, and the uninstaller
-leaves it in place. Remove it with `npm uninstall -g revgate`. The uninstaller
-reminds you.
-
-## Develop
+## Examples
 
 ```bash
-npm install            # it also builds, through the `prepare` script; a type error fails the install
-npm run build          # it compiles the TypeScript to dist/
-npm test               # the node:test suite through tsx; it needs Node 21 or later — see below
-npm run dev -- review  # it runs the UI against your working tree without a build
+revgate review                                    # every uncommitted change
+revgate review --staged                           # what you are about to commit
+revgate review HEAD~3                             # the last three commits and the working tree
+revgate review main feature                       # two refs
+revgate review main..feature                      # a branch, as a pull request shows it
+revgate review main...feature                     # the same, from the merge base
+revgate review main..feature --include src        # only the src/ part of it
+revgate review -I src -I public -X src/generated  # the filters compose
+revgate review --exit-code-on-comments            # exit 10 if there is work to do
+revgate review -o review.md main..feature         # write the annotations to a file
+revgate review --no-open                          # print the URL, open it yourself
+revgate review --plan docs/plans/my-plan.md       # review a plan document
+revgate review --no-history --staged              # do not archive this one
 ```
 
-revgate itself runs on Node 18 or later, but `npm test` needs **Node 21 or
-later**. The test script passes a glob to `node --test`, and the runner expands
-that glob rather than the shell. Everything else in this list works on Node 18.
+In a Copilot session:
 
-`src/` groups the code by concern, and each package holds one of them:
+```
+/revgate-review        # review what the agent just did
+/revgate-plan          # review a plan document on demand
+```
+
+## Development
+
+```bash
+uv sync --all-groups   # create .venv, install runtime and dev groups
+uv run ruff check      # lint
+uv run ruff format     # format
+uv run mypy            # types, strict mode
+uv run pytest          # the whole suite
+uv run revgate review  # the UI against your working tree, straight from the checkout
+```
+
+Those four checks are the gate; every change must leave all four green.
+
+`src/revgate/` groups code by concern, one package each:
 
 | Package | Concern |
 | --- | --- |
-| `src/cli/` | argv, the help text, and the body of each command |
-| `src/git/` | each call to git, the scopes, the untracked budget, and the index |
-| `src/review/` | the diff parser, the plan, the feedback, and the report |
-| `src/server/` | the local review server and its HTTP guards |
-| `src/integrations/` | the clients for other products; today Copilot only |
-| `src/store/` | the history files, the palettes, and the config file |
-| `src/shared/` | the shared types and the stderr logger |
+| `cli/` | argv, the help text, and the body of each command |
+| `git/` | every call to git, the scopes, the untracked budget, and the index |
+| `review/` | the diff parser, the plan, the feedback, and the report |
+| `server/` | the local review server and its HTTP guards |
+| `integrations/` | clients for other products; today Copilot only |
+| `store/` | the history files, the palettes, and the config file |
+| `shared/` | shared types, the stderr logger, and the stdout discipline |
 
-`src/index.ts` stays at the root of `src/` and it dispatches only. `test/` has
-the same shape as `src/`. `public/` holds `index.html` for the markup, `app.css`
-for the style, and `app.js` for the page script. `agents.md` lists each module,
-and it holds the rules that keep this structure honest.
+`__main__.py` stays at the package root and dispatches only. `tests/` mirrors the
+same shape. `src/revgate/public/` ships with the package: `index.html` for the
+markup, `app.css` for the style, `app.js` for the page script. `agents.md` lists
+every module and holds the rules that keep this structure honest.
 
-`.github/skills/` is the only skill tree, and the installer copies it without a
-change into `%USERPROFILE%\.copilot\skills\`. `hooks/revgate.json` is a
-reference template. The installer generates a copy with the correct absolute
-path to the `dist/index.js` of this clone, and it writes that copy only to the
-global `%USERPROFILE%\.copilot\hooks\`. The installer no longer writes
-`.github/hooks/`, but that directory stays gitignored: a hand-copied template
-there pins the path of one machine, and to commit it hands every other clone a
-hook that cannot run. The template and the generated copy both wrap the
-`preToolUse` command in an existence check on `dist/index.js`, because that hook
-fails **closed**. Without the check, a clone that moved, a cleaned `dist/`, or a
-mistyped path denies every tool call in every session, until somebody finds the
-JSON and edits it by hand.
+`assets/` holds everything the installer ships rather than imports, one folder
+per destination: `assets/skills/` is the only skill tree, copied unchanged into
+`%USERPROFILE%\.copilot\skills\`, and `assets/hooks/revgate.json` is a reference
+template;
+the installer generates a copy with the absolute path of the installed executable
+and writes it only to the global `%USERPROFILE%\.copilot\hooks\`. Both wrap the
+`preToolUse` command in an existence check on that executable, because the hook
+fails closed — without the check, an uninstall or a mistyped path denies every
+tool call in every session until somebody hand-edits the JSON.
 
-`test/docs.test.ts` guards this file and `agents.md` the same way: each flag in
-`--help` must appear in the README, and each quoted revgate command line here
-must parse through `parseArgs`. Update the documents in the same commit as the
-code.
+Three rules to know before changing anything:
 
-Three rules to know before you change anything:
-
-- **stdout is a contract.** Each log line goes to stderr
-  (`src/shared/log.ts`), because Copilot parses stdout. Do not widen what
-  reaches stdout without an explicit mode flag.
-- **The hook fails open.** Each error path of `revgate copilot-plan` writes an
+- **stdout is a contract.** Every log line goes to stderr (`shared/log.py`),
+  because Copilot parses stdout. `shared/streams.py` pins stdout to UTF-8 with no
+  newline translation, since the Windows defaults break every byte contract in
+  the project. Do not widen what reaches stdout without an explicit mode flag.
+- **The hook fails open.** Every error path of `revgate plan` writes an
   explicit `allow` and exits 0. Only `revgate review` may exit non-zero.
-- **Comments are moderate, and `npm test` measures them.** Keep a one-line
-  JSDoc on each exported symbol in `src/`. Add a short "why" note only where the
-  code is not obvious. `test/comments.test.ts` fails the build if a file in
-  `src/` or in `test/` goes above 20% comment lines, or if a comment carries
-  narrative or history. The full reasoning belongs in the Rules of `agents.md`,
-  not in the code.
+- **Comments are moderate.** One-line docstring on each public symbol in
+  `src/revgate/`; a short "why" note only where the code is not obvious. The full
+  reasoning belongs in the Rules of `agents.md`.
 
-## Design notes: what we took from revdiff
-
-The on-demand invocation model comes from
-[umputun/revdiff](https://github.com/umputun/revdiff). revdiff is a standalone
-AI code reviewer, and agents drive it through skills and slash commands. revgate
-takes these parts of it: the positional ref scopes and `--staged`; `--include`
-and `--exclude` and their narrow-then-remove composition; the
-`## path:LINE (+)` annotation record format, with continuation lines that are
-indented by one space; `-o` and `--output`; exit code `10` for "revgate captured
-comments"; and the `<historyDir>/<repo>/<timestamp>.md` history.
-
-The overall posture comes from revdiff too. revdiff is manual-first, and its one
-hook-driven exception is automatic plan review, in the `revdiff-planning`
-plugin. Since 0.2.0 revgate has the same shape: the `agentStop` diff gate that
-once fired at each end of a turn is gone, and the `preToolUse` plan gate is the
-only thing that runs unasked.
-
-revgate adopted two things in a **reduced** form:
-
-- **Themes**, as the five built-ins above and nothing else. The themes of
-  revdiff are a TUI feature. The palettes port to a browser page, but the loader
-  for user-authored theme files does not — see below.
-- **A config file**, which holds exactly one key. This item was on the deferred
-  list until the themes landed. The reasoning was that the flags,
-  `$REVGATE_HISTORY_DIR`, `$REVGATE_PLAN_FILE` and `$COPILOT_HOME` covered
-  everything that such a file would hold. That reasoning was wrong for anything
-  that the *page* chooses: the random port makes each run a fresh browser
-  origin, thus no browser-side store can persist a preference across reviews.
-  `~/.revgate/config.json` exists for precisely that gap, and it holds only what
-  falls into it.
-
-revgate deliberately did **not** adopt these, because it is a browser page
-rather than a TUI, and because a person is the reviewer rather than an LLM:
-
-- the terminal UI, the vim motions and the blame view
-- Mercurial and Jujutsu support
-- `--stdin` and `--only`
-- user-authored themes, which drop a JSON theme into `~/.revgate/themes/`. The
-  file format is the small part. The bootstrap around it is what makes the
-  feature usable: revgate must dump a valid starting file, validate a theme
-  before it adopts it, and ship examples to copy. Without that, a user
-  hand-authors a theme against one README example and sees a validation failure
-  only as a stderr warning that nobody reads. It is also the one place where
-  this feature has to start policing colour *values*, because a hand-written
-  `url(…)` fires an outbound request from a page that is otherwise deliberately
-  network-free.
-
-revgate keeps what revdiff does not have: a plan gate that is native to Copilot,
-and a browser review page where a person leaves the comments.
+Every flag in `--help` must appear in this document, and `agents.md` must list
+every module. Update both in the same commit as the code.

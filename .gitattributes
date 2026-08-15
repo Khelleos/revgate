@@ -1,6 +1,13 @@
 # The skill files are installed by a raw byte copy (install.ps1 Copy-Item) and
-# their quoted command lines are parsed by test/skills.test.ts. With git's
-# Windows default (`core.autocrlf=true`) and no rule here, the same committed
-# blob materialises as CRLF on a Windows checkout — so what gets installed (and
-# tested) differs by platform from what the repository records. Pin to LF.
-.github/skills/** text eol=lf
+# their quoted command lines are read verbatim. With git's Windows default
+# (`core.autocrlf=true`) and no rule here, the same committed blob materialises
+# as CRLF on a Windows checkout — so what gets installed differs by platform
+# from what the repository records. Pin to LF.
+assets/skills/** text eol=lf
+
+# The review page is served byte for byte out of the installed package, and the
+# suite asserts on those bytes. A CRLF checkout would change what ships.
+src/revgate/public/*.html text eol=lf
+src/revgate/public/*.css text eol=lf
+src/revgate/public/*.js text eol=lf
+src/revgate/public/fonts/** binary
