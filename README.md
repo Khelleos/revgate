@@ -389,3 +389,7 @@ Three rules to know before changing anything:
 
 Every flag in `--help` must appear in this document, and `agents.md` must list
 every module. Update both in the same commit as the code.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
